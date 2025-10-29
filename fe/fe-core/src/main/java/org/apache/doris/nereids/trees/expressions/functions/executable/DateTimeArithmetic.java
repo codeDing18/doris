@@ -49,11 +49,19 @@ public class DateTimeArithmetic {
     }
 
     /**
-     * datetime arithmetic function day_hour-add.
+     * datetime arithmetic function day_hour_add.
      */
     @ExecFunction(name = "day_hour_add")
     public static Expression dayHourAdd(DateTimeV2Literal date, VarcharLiteral dayHour) {
         return date.plusDayHour(dayHour);
+    }
+
+    /**
+     * datetime arithmetic function minute_second_add.
+     */
+    @ExecFunction(name = "minute_second_add")
+    public static Expression minuteSecondAdd(DateTimeV2Literal date, VarcharLiteral minuteSecond) {
+        return date.plusMinuteSecond(minuteSecond);
     }
 
     /**
