@@ -161,6 +161,54 @@ class JdbcConnectorMetadataCreateTableTest {
     }
 
     @Test
+    void testCreateTableWithComment() {
+        HashMap<String, String> captured = new HashMap<>();
+        JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
+
+        List<ConnectorColumn> columns = new ArrayList<>();
+        columns.add(new ConnectorColumn("id", ConnectorType.of("INT"),
+                "primary key identifier", true, null));
+        columns.add(new ConnectorColumn("name", new ConnectorType("VARCHAR", 100, -1),
+                "user's display name", false, null));
+
+        ConnectorTableSchema schema = new ConnectorTableSchema(
+                "users", columns, "JDBC", Collections.emptyMap());
+
+        metadata.createTable(testSession(), schema, dbProps());
+
+        String sql = captured.get(LAST_SQL_KEY);
+        Assertions.assertNotNull(sql);
+        Assertions.assertTrue(sql.contains("COMMENT 'primary key identifier'"),
+                "Should have comment. SQL: " + sql);
+        Assertions.assertTrue(sql.contains("COMMENT 'user\\'s display name'"),
+                "Should escape single quote in comment. SQL: " + sql);
+    }
+
+    @Test
+    void testCreateTableNotNullAndComment() {
+        HashMap<String, String> captured = new HashMap<>();
+        JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
+
+        List<ConnectorColumn> columns = new ArrayList<>();
+        columns.add(new ConnectorColumn("name", new ConnectorType("VARCHAR", 200, -1),
+                "user name", false, null));
+
+        ConnectorTableSchema schema = new ConnectorTableSchema(
+                "t", columns, "JDBC", Collections.emptyMap());
+
+        metadata.createTable(testSession(), schema, dbProps());
+
+        String sql = captured.get(LAST_SQL_KEY);
+        Assertions.assertNotNull(sql);
+        Assertions.assertTrue(sql.contains("NOT NULL"),
+                "NOT NULL should be present. SQL: " + sql);
+        Assertions.assertTrue(sql.contains("COMMENT 'user name'"),
+                "COMMENT should be present. SQL: " + sql);
+        Assertions.assertTrue(sql.indexOf("NOT NULL") < sql.indexOf("COMMENT"),
+                "NOT NULL should appear before COMMENT. SQL: " + sql);
+    }
+
+    @Test
     void testCreateTableMultipleColumns() {
         HashMap<String, String> captured = new HashMap<>();
         JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);

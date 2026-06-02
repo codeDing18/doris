@@ -290,6 +290,10 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
             if (!col.isNullable()) {
                 sql.append(" NOT NULL");
             }
+            String comment = col.getComment();
+            if (comment != null && !comment.isEmpty()) {
+                sql.append(" COMMENT '").append(comment.replace("'", "\\'")).append("'");
+            }
         }
         sql.append("\n)");
 

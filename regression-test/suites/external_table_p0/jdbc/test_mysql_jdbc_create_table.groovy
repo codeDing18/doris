@@ -42,14 +42,14 @@ suite("test_mysql_jdbc_create_table", "p0,external") {
         "driver_class"="com.mysql.cj.jdbc.Driver"
     )"""
 
-    // ===== Test 1: Basic types + NOT NULL =====
-    logger.info("=== Test 1: CREATE TABLE with basic types ===")
+    // ===== Test 1: Basic types + NOT NULL + COMMENT =====
+    logger.info("=== Test 1: CREATE TABLE with NOT NULL and COMMENT ===")
     sql """drop table if exists ${catalog_name}.${ex_db_name}.ex_create_t1"""
     sql """CREATE TABLE ${catalog_name}.${ex_db_name}.ex_create_t1 (
-        id INT,
-        name VARCHAR(100),
-        price DECIMAL(10,2),
-        amount INT NOT NULL
+        id INT NOT NULL COMMENT 'primary key id',
+        name VARCHAR(100) NOT NULL COMMENT 'user name',
+        price DECIMAL(10,2) COMMENT 'product price',
+        amount INT NOT NULL COMMENT 'stock amount'
     )"""
     order_qt_t1_desc """DESC ${catalog_name}.${ex_db_name}.ex_create_t1"""
 
