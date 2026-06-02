@@ -22,14 +22,17 @@ import org.apache.doris.connector.api.ConnectorSession;
 import org.apache.doris.connector.api.ConnectorTableSchema;
 import org.apache.doris.connector.api.ConnectorType;
 import org.apache.doris.connector.jdbc.client.JdbcConnectorClient;
+import org.apache.doris.connector.jdbc.client.JdbcMySQLConnectorClient;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.lang.reflect.Method;
 
 /**
  * Unit tests for CREATE TABLE SQL generation in {@link JdbcConnectorMetadata}.
@@ -86,7 +89,7 @@ class JdbcConnectorMetadataCreateTableTest {
 
     @Test
     void testCreateTableSimpleTypes() {
-        java.util.HashMap<String, String> captured = new java.util.HashMap<>();
+        HashMap<String, String> captured = new HashMap<>();
         JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
 
         List<ConnectorColumn> columns = new ArrayList<>();
@@ -112,7 +115,7 @@ class JdbcConnectorMetadataCreateTableTest {
 
     @Test
     void testCreateTableDecimal() {
-        java.util.HashMap<String, String> captured = new java.util.HashMap<>();
+        HashMap<String, String> captured = new HashMap<>();
         JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
 
         List<ConnectorColumn> columns = new ArrayList<>();
@@ -132,7 +135,7 @@ class JdbcConnectorMetadataCreateTableTest {
 
     @Test
     void testCreateTableNotNull() {
-        java.util.HashMap<String, String> captured = new java.util.HashMap<>();
+        HashMap<String, String> captured = new HashMap<>();
         JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
 
         List<ConnectorColumn> columns = new ArrayList<>();
@@ -151,7 +154,7 @@ class JdbcConnectorMetadataCreateTableTest {
 
     @Test
     void testCreateTableMultipleColumns() {
-        java.util.HashMap<String, String> captured = new java.util.HashMap<>();
+        HashMap<String, String> captured = new HashMap<>();
         JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
 
         List<ConnectorColumn> columns = new ArrayList<>();
@@ -174,7 +177,7 @@ class JdbcConnectorMetadataCreateTableTest {
 
     @Test
     void testToSqlType() throws Exception {
-        java.lang.reflect.Method method = JdbcConnectorMetadata.class
+        Method method = JdbcConnectorMetadata.class
                 .getDeclaredMethod("toSqlType", ConnectorType.class);
         method.setAccessible(true);
 
