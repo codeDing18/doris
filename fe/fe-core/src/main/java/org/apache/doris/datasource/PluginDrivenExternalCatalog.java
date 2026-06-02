@@ -287,7 +287,11 @@ public class PluginDrivenExternalCatalog extends ExternalCatalog {
 
         ConnectorTableSchema schema = new ConnectorTableSchema(
                 tblName, columns, "JDBC", createTableInfo.getProperties());
-        connector.getMetadata(session).createTable(session, schema, createTableInfo.getProperties());
+        // Pass catalog and database names for fully qualified table name
+        HashMap<String, String> createProps = new HashMap<>(createTableInfo.getProperties());
+        createProps.put("jdbc_catalog_name", getName());
+        createProps.put("jdbc_database_name", createTableInfo.getDbName());
+        connector.getMetadata(session).createTable(session, schema, createProps);
 
         // Persistent edit log
         Env.getCurrentEnv().getEditLog().logCreateTable(

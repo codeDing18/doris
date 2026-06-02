@@ -32,7 +32,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.lang.reflect.Method;
 
 /**
  * Unit tests for CREATE TABLE SQL generation in {@link JdbcConnectorMetadata}.
@@ -40,6 +39,13 @@ import java.lang.reflect.Method;
 class JdbcConnectorMetadataCreateTableTest {
 
     private static final String LAST_SQL_KEY = "lastSql";
+    private static final String TEST_DB = "test_db";
+
+    private static Map<String, String> dbProps() {
+        Map<String, String> props = new HashMap<>();
+        props.put("jdbc_database_name", TEST_DB);
+        return props;
+    }
 
     /**
      * Creates a JdbcConnectorMetadata backed by a client that captures the last
@@ -99,14 +105,14 @@ class JdbcConnectorMetadataCreateTableTest {
         ConnectorTableSchema schema = new ConnectorTableSchema(
                 "test_tbl", columns, "JDBC", Collections.emptyMap());
 
-        metadata.createTable(testSession(), schema, Collections.emptyMap());
+        metadata.createTable(testSession(), schema, dbProps());
 
         String sql = captured.get(LAST_SQL_KEY);
         Assertions.assertNotNull(sql, "executeStmt should have been called");
         Assertions.assertTrue(sql.contains("CREATE TABLE"),
                 "Should start with CREATE TABLE. SQL: " + sql);
-        Assertions.assertTrue(sql.contains("`test_tbl`"),
-                "Should quote table name. SQL: " + sql);
+        Assertions.assertTrue(sql.contains("`test_db`.`test_tbl`"),
+                "Should use fully qualified name. SQL: " + sql);
         Assertions.assertTrue(sql.contains("`id` INT"),
                 "Should have INT column. SQL: " + sql);
         Assertions.assertTrue(sql.contains("`name` VARCHAR(100)"),
@@ -125,10 +131,12 @@ class JdbcConnectorMetadataCreateTableTest {
         ConnectorTableSchema schema = new ConnectorTableSchema(
                 "orders", columns, "JDBC", Collections.emptyMap());
 
-        metadata.createTable(testSession(), schema, Collections.emptyMap());
+        metadata.createTable(testSession(), schema, dbProps());
 
         String sql = captured.get(LAST_SQL_KEY);
         Assertions.assertNotNull(sql);
+        Assertions.assertTrue(sql.contains("`test_db`.`orders`"),
+                "Should use fully qualified name. SQL: " + sql);
         Assertions.assertTrue(sql.contains("`price` DECIMAL(10,2)"),
                 "Should have DECIMAL(10,2). SQL: " + sql);
     }
@@ -144,7 +152,7 @@ class JdbcConnectorMetadataCreateTableTest {
         ConnectorTableSchema schema = new ConnectorTableSchema(
                 "t", columns, "JDBC", Collections.emptyMap());
 
-        metadata.createTable(testSession(), schema, Collections.emptyMap());
+        metadata.createTable(testSession(), schema, dbProps());
 
         String sql = captured.get(LAST_SQL_KEY);
         Assertions.assertNotNull(sql);
@@ -165,10 +173,12 @@ class JdbcConnectorMetadataCreateTableTest {
         ConnectorTableSchema schema = new ConnectorTableSchema(
                 "multi", columns, "JDBC", Collections.emptyMap());
 
-        metadata.createTable(testSession(), schema, Collections.emptyMap());
+        metadata.createTable(testSession(), schema, dbProps());
 
         String sql = captured.get(LAST_SQL_KEY);
         Assertions.assertNotNull(sql);
+        Assertions.assertTrue(sql.contains("`test_db`.`multi`"),
+                "Should use fully qualified name. SQL: " + sql);
         Assertions.assertTrue(sql.contains("`a` INT"), "Column a. SQL: " + sql);
         Assertions.assertTrue(sql.contains("`b` BIGINT"), "Column b. SQL: " + sql);
         Assertions.assertTrue(sql.contains("`c` VARCHAR(255) NOT NULL"),
@@ -176,17 +186,61 @@ class JdbcConnectorMetadataCreateTableTest {
     }
 
     @Test
-    void testToSqlType() throws Exception {
-        Method method = JdbcConnectorMetadata.class
-                .getDeclaredMethod("toSqlType", ConnectorType.class);
-        method.setAccessible(true);
+    void testCreateTableBiguint() {
+        HashMap<String, String> captured = new HashMap<>();
+        JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
 
-        Assertions.assertEquals("INT", method.invoke(null, ConnectorType.of("INT")));
-        Assertions.assertEquals("VARCHAR(100)",
-                method.invoke(null, new ConnectorType("VARCHAR", 100, -1)));
-        Assertions.assertEquals("DECIMAL(10,2)",
-                method.invoke(null, ConnectorType.of("DECIMAL", 10, 2)));
-        Assertions.assertEquals("CHAR(10)",
-                method.invoke(null, new ConnectorType("CHAR", 10, -1)));
+        List<ConnectorColumn> columns = new ArrayList<>();
+        columns.add(new ConnectorColumn("c", ConnectorType.of("BIGINT UNSIGNED"), null, true, null));
+
+        ConnectorTableSchema schema = new ConnectorTableSchema(
+                "t", columns, "JDBC", Collections.emptyMap());
+
+        metadata.createTable(testSession(), schema, dbProps());
+
+        String sql = captured.get(LAST_SQL_KEY);
+        Assertions.assertNotNull(sql);
+        Assertions.assertTrue(sql.contains("`c` BIGINT UNSIGNED"),
+                "Should have BIGINT UNSIGNED. SQL: " + sql);
+    }
+
+    @Test
+    void testCreateTableUnsupported() {
+        HashMap<String, String> captured = new HashMap<>();
+        JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
+
+        List<ConnectorColumn> columns = new ArrayList<>();
+        columns.add(new ConnectorColumn("c", ConnectorType.of("UNSUPPORTED"), null, true, null));
+
+        ConnectorTableSchema schema = new ConnectorTableSchema(
+                "t", columns, "JDBC", Collections.emptyMap());
+
+        metadata.createTable(testSession(), schema, dbProps());
+
+        String sql = captured.get(LAST_SQL_KEY);
+        Assertions.assertNotNull(sql);
+        Assertions.assertTrue(sql.contains("`c` UNSUPPORTED"),
+                "UNSUPPORTED type should pass through. SQL: " + sql);
+    }
+
+    @Test
+    void testCreateTableNoDbName() {
+        // Test that table name without database qualification still works
+        HashMap<String, String> captured = new HashMap<>();
+        JdbcConnectorMetadata metadata = createMetadataWithCapture(captured);
+
+        List<ConnectorColumn> columns = new ArrayList<>();
+        columns.add(new ConnectorColumn("id", ConnectorType.of("INT"), null, true, null));
+
+        ConnectorTableSchema schema = new ConnectorTableSchema(
+                "tbl", columns, "JDBC", Collections.emptyMap());
+
+        // Pass empty properties (no jdbc_database_name)
+        metadata.createTable(testSession(), schema, Collections.emptyMap());
+
+        String sql = captured.get(LAST_SQL_KEY);
+        Assertions.assertNotNull(sql);
+        Assertions.assertTrue(sql.contains("CREATE TABLE `tbl`"),
+                "Without db name, should use plain table name. SQL: " + sql);
     }
 }

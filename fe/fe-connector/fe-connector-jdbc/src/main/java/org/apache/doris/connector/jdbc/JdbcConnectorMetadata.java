@@ -266,6 +266,12 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
             Map<String, String> properties) {
         JdbcDbType dbType = client.getDbType();
         StringBuilder sql = new StringBuilder("CREATE TABLE ");
+
+        // Use fully qualified table name: `db`.`table`
+        String dbName = properties.get("jdbc_database_name");
+        if (dbName != null && !dbName.isEmpty()) {
+            sql.append(JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, dbName)).append(".");
+        }
         sql.append(JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, schema.getTableName()));
         sql.append(" (\n");
 
