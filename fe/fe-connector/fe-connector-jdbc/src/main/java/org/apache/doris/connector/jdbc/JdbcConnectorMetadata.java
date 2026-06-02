@@ -262,6 +262,34 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
     }
 
     @Override
+    public void createTable(ConnectorSession session, ConnectorTableSchema schema,
+            Map<String, String> properties) {
+        JdbcDbType dbType = client.getDbType();
+        StringBuilder sql = new StringBuilder("CREATE TABLE ");
+        sql.append(JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, schema.getTableName()));
+        sql.append(" (\n");
+
+        List<ConnectorColumn> cols = schema.getColumns();
+        for (int i = 0; i < cols.size(); i++) {
+            if (i > 0) {
+                sql.append(",\n");
+            }
+            ConnectorColumn col = cols.get(i);
+            sql.append("  ").append(JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, col.getName()));
+            sql.append(" ").append(toSqlType(col.getType()));
+            if (!col.isNullable()) {
+                sql.append(" NOT NULL");
+            }
+        }
+        sql.append("\n)");
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("Executing CREATE TABLE: {}", sql);
+        }
+        client.executeStmt(sql.toString());
+    }
+
+    @Override
     public ConnectorTableSchema getColumnsFromQuery(ConnectorSession session, String query) {
         List<JdbcFieldInfo> fields = client.getColumnsFromQuery(query);
         List<ConnectorColumn> columns = new ArrayList<>(fields.size());
@@ -276,6 +304,18 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
                     true));
         }
         return new ConnectorTableSchema("query_result", columns, "JDBC", properties);
+    }
+
+    private static String toSqlType(ConnectorType type) {
+        String typeName = type.getTypeName();
+        int precision = type.getPrecision();
+        int scale = type.getScale();
+        if (scale >= 0) {
+            return typeName + "(" + precision + "," + scale + ")";
+        } else if (precision >= 0) {
+            return typeName + "(" + precision + ")";
+        }
+        return typeName;
     }
 
     // ========= ConnectorWriteOps =========

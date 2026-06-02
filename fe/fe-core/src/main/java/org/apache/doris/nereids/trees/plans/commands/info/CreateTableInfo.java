@@ -47,6 +47,7 @@ import org.apache.doris.common.util.PropertyAnalyzer;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.datasource.PluginDrivenExternalCatalog;
 import org.apache.doris.datasource.hive.HMSExternalCatalog;
 import org.apache.doris.datasource.iceberg.IcebergExternalCatalog;
 import org.apache.doris.datasource.maxcompute.MaxComputeExternalCatalog;
@@ -389,6 +390,17 @@ public class CreateTableInfo {
             throw new AnalysisException("Paimon type catalog can only use `paimon` engine.");
         } else if (catalog instanceof MaxComputeExternalCatalog && !engineName.equals(ENGINE_MAXCOMPUTE)) {
             throw new AnalysisException("MaxCompute type catalog can only use `maxcompute` engine.");
+        } else if (catalog instanceof PluginDrivenExternalCatalog) {
+            PluginDrivenExternalCatalog pluginCat = (PluginDrivenExternalCatalog) catalog;
+            Map<String, String> props = pluginCat.getProperties();
+            String jdbcUrl = props.get("jdbc_url");
+            if (jdbcUrl != null && jdbcUrl.startsWith("jdbc:mysql://")) {
+                if (!engineName.equals(ENGINE_JDBC)) {
+                    throw new AnalysisException("Jdbc catalog can only use `jdbc` engine.");
+                }
+            } else {
+                throw new AnalysisException("Create table is not supported for this type of catalog.");
+            }
         }
     }
 
@@ -911,6 +923,15 @@ public class CreateTableInfo {
                 engineName = ENGINE_PAIMON;
             } else if (catalog instanceof MaxComputeExternalCatalog) {
                 engineName = ENGINE_MAXCOMPUTE;
+            } else if (catalog instanceof PluginDrivenExternalCatalog) {
+                PluginDrivenExternalCatalog pluginCat = (PluginDrivenExternalCatalog) catalog;
+                Map<String, String> props = pluginCat.getProperties();
+                String jdbcUrl = props.get("jdbc_url");
+                if (jdbcUrl != null && jdbcUrl.startsWith("jdbc:mysql://")) {
+                    engineName = ENGINE_JDBC;
+                } else {
+                    throw new AnalysisException("Current catalog does not support create table: " + ctlName);
+                }
             } else {
                 throw new AnalysisException("Current catalog does not support create table: " + ctlName);
             }

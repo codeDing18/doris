@@ -17,15 +17,24 @@
 
 package org.apache.doris.datasource;
 
+import org.apache.doris.catalog.Env;
+import org.apache.doris.catalog.PrimitiveType;
+import org.apache.doris.catalog.ScalarType;
+import org.apache.doris.catalog.Type;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.connector.ConnectorFactory;
 import org.apache.doris.connector.ConnectorSessionBuilder;
 import org.apache.doris.connector.DefaultConnectorContext;
 import org.apache.doris.connector.DefaultConnectorValidationContext;
 import org.apache.doris.connector.api.Connector;
+import org.apache.doris.connector.api.ConnectorColumn;
 import org.apache.doris.connector.api.ConnectorSession;
+import org.apache.doris.connector.api.ConnectorTableSchema;
 import org.apache.doris.connector.api.ConnectorTestResult;
+import org.apache.doris.connector.api.ConnectorType;
 import org.apache.doris.datasource.property.metastore.MetastoreProperties;
+import org.apache.doris.nereids.trees.plans.commands.info.ColumnDefinition;
+import org.apache.doris.nereids.trees.plans.commands.info.CreateTableInfo;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.transaction.PluginDrivenTransactionManager;
 
@@ -33,6 +42,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -261,6 +271,88 @@ public class PluginDrivenExternalCatalog extends ExternalCatalog {
                 .withCatalogName(getName())
                 .withCatalogProperties(catalogProperty.getProperties())
                 .build();
+    }
+
+    @Override
+    public boolean createTable(CreateTableInfo createTableInfo) throws org.apache.doris.common.UserException {
+        makeSureInitialized();
+        ConnectorSession session = buildConnectorSession();
+        String tblName = createTableInfo.getTableName();
+
+        // Convert Doris ColumnDefinitions to ConnectorColumn list with MySQL type mapping
+        List<ConnectorColumn> columns = new ArrayList<>();
+        for (ColumnDefinition colDef : createTableInfo.getColumns()) {
+            columns.add(toConnectorColumn(colDef));
+        }
+
+        ConnectorTableSchema schema = new ConnectorTableSchema(
+                tblName, columns, "JDBC", createTableInfo.getProperties());
+        connector.getMetadata(session).createTable(session, schema, createTableInfo.getProperties());
+
+        // Persistent edit log
+        Env.getCurrentEnv().getEditLog().logCreateTable(
+                new org.apache.doris.persist.CreateTableInfo(
+                        getName(), createTableInfo.getDbName(), tblName));
+
+        // Refresh db meta cache
+        getDbForReplay(createTableInfo.getDbName())
+                .ifPresent(db -> db.resetMetaCacheNames());
+        LOG.info("create table {}.{}.{} success", getName(),
+                createTableInfo.getDbName(), tblName);
+        return false;
+    }
+
+    private ConnectorColumn toConnectorColumn(ColumnDefinition colDef) {
+        return new ConnectorColumn(
+                colDef.getName(),
+                toConnectorType(colDef.getType()),
+                colDef.getComment(),
+                colDef.isNullable(),
+                null);
+    }
+
+    private static ConnectorType toConnectorType(org.apache.doris.nereids.types.DataType nereidsType) {
+        Type catalogType = nereidsType.toCatalogDataType();
+        PrimitiveType pt = catalogType.getPrimitiveType();
+        switch (pt) {
+            case TINYINT:
+                return ConnectorType.of("TINYINT");
+            case SMALLINT:
+                return ConnectorType.of("SMALLINT");
+            case INT:
+                return ConnectorType.of("INT");
+            case BIGINT:
+                return ConnectorType.of("BIGINT");
+            case LARGEINT:
+                return ConnectorType.of("BIGINT");
+            case FLOAT:
+                return ConnectorType.of("FLOAT");
+            case DOUBLE:
+                return ConnectorType.of("DOUBLE");
+            case DECIMAL128:
+            case DECIMAL256: {
+                ScalarType st = (ScalarType) catalogType;
+                return ConnectorType.of("DECIMAL", st.getScalarPrecision(), st.getScalarScale());
+            }
+            case CHAR:
+                return new ConnectorType("CHAR", catalogType.getLength(), -1);
+            case VARCHAR:
+                return new ConnectorType("VARCHAR", catalogType.getLength(), -1);
+            case STRING:
+                return ConnectorType.of("TEXT");
+            case DATE:
+            case DATEV2:
+                return ConnectorType.of("DATE");
+            case DATETIME:
+            case DATETIMEV2:
+                return ConnectorType.of("DATETIME");
+            case BOOLEAN:
+                return ConnectorType.of("TINYINT");
+            case JSONB:
+                return ConnectorType.of("JSON");
+            default:
+                return ConnectorType.of("TEXT");
+        }
     }
 
     @Override
