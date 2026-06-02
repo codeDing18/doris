@@ -265,6 +265,10 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
     public void createTable(ConnectorSession session, ConnectorTableSchema schema,
             Map<String, String> properties) {
         JdbcDbType dbType = client.getDbType();
+
+        LOG.info("createTable called, properties keys: {}, tableName: {}",
+                properties.keySet(), schema.getTableName());
+
         StringBuilder sql = new StringBuilder("CREATE TABLE ");
 
         // Use fully qualified table name: `db`.`table`
