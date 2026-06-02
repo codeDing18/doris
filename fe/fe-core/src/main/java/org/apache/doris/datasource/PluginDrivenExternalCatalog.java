@@ -17,6 +17,7 @@
 
 package org.apache.doris.datasource;
 
+import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.PrimitiveType;
 import org.apache.doris.catalog.ScalarType;
@@ -33,7 +34,6 @@ import org.apache.doris.connector.api.ConnectorTableSchema;
 import org.apache.doris.connector.api.ConnectorTestResult;
 import org.apache.doris.connector.api.ConnectorType;
 import org.apache.doris.datasource.property.metastore.MetastoreProperties;
-import org.apache.doris.nereids.trees.plans.commands.info.ColumnDefinition;
 import org.apache.doris.nereids.trees.plans.commands.info.CreateTableInfo;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.transaction.PluginDrivenTransactionManager;
@@ -279,10 +279,10 @@ public class PluginDrivenExternalCatalog extends ExternalCatalog {
         ConnectorSession session = buildConnectorSession();
         String tblName = createTableInfo.getTableName();
 
-        // Convert Doris ColumnDefinitions to ConnectorColumn list with MySQL type mapping
+        // Convert Doris Columns to ConnectorColumn list with MySQL type mapping
         List<ConnectorColumn> columns = new ArrayList<>();
-        for (ColumnDefinition colDef : createTableInfo.getColumns()) {
-            columns.add(toConnectorColumn(colDef));
+        for (Column col : createTableInfo.getColumns()) {
+            columns.add(toConnectorColumn(col));
         }
 
         ConnectorTableSchema schema = new ConnectorTableSchema(
@@ -302,17 +302,16 @@ public class PluginDrivenExternalCatalog extends ExternalCatalog {
         return false;
     }
 
-    private ConnectorColumn toConnectorColumn(ColumnDefinition colDef) {
+    private ConnectorColumn toConnectorColumn(Column col) {
         return new ConnectorColumn(
-                colDef.getName(),
-                toConnectorType(colDef.getType()),
-                colDef.getComment(),
-                colDef.isNullable(),
+                col.getName(),
+                toConnectorType(col.getType()),
+                col.getComment(),
+                col.isAllowNull(),
                 null);
     }
 
-    private static ConnectorType toConnectorType(org.apache.doris.nereids.types.DataType nereidsType) {
-        Type catalogType = nereidsType.toCatalogDataType();
+    private static ConnectorType toConnectorType(Type catalogType) {
         PrimitiveType pt = catalogType.getPrimitiveType();
         switch (pt) {
             case TINYINT:
@@ -324,7 +323,8 @@ public class PluginDrivenExternalCatalog extends ExternalCatalog {
             case BIGINT:
                 return ConnectorType.of("BIGINT");
             case LARGEINT:
-                return ConnectorType.of("BIGINT");
+                // MySQL BIGINT UNSIGNED → Doris LARGEINT (JdbcMySQLClient.jdbcTypeToDoris line 243-244)
+                return ConnectorType.of("BIGINT UNSIGNED");
             case FLOAT:
                 return ConnectorType.of("FLOAT");
             case DOUBLE:
@@ -344,14 +344,20 @@ public class PluginDrivenExternalCatalog extends ExternalCatalog {
             case DATEV2:
                 return ConnectorType.of("DATE");
             case DATETIME:
-            case DATETIMEV2:
+            case DATETIMEV2: {
+                int scale = (catalogType instanceof ScalarType)
+                        ? ((ScalarType) catalogType).getScalarScale() : 0;
+                if (scale > 0) {
+                    return new ConnectorType("DATETIME", scale, -1);
+                }
                 return ConnectorType.of("DATETIME");
+            }
             case BOOLEAN:
                 return ConnectorType.of("TINYINT");
             case JSONB:
                 return ConnectorType.of("JSON");
             default:
-                return ConnectorType.of("TEXT");
+                return ConnectorType.of("UNSUPPORTED");
         }
     }
 
