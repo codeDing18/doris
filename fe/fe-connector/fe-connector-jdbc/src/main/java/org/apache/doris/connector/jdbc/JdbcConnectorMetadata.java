@@ -289,9 +289,7 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
         }
         sql.append("\n)");
 
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("Executing CREATE TABLE: {}", sql);
-        }
+        LOG.info("Executing CREATE TABLE: {}", sql);
         client.executeStmt(sql.toString());
     }
 
