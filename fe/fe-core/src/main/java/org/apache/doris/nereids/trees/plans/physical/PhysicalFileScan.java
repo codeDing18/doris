@@ -19,6 +19,7 @@ package org.apache.doris.nereids.trees.plans.physical;
 
 import org.apache.doris.analysis.TableScanParams;
 import org.apache.doris.analysis.TableSnapshot;
+import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
 import org.apache.doris.datasource.ExternalTable;
 import org.apache.doris.nereids.memo.GroupExpression;
 import org.apache.doris.nereids.properties.DistributionSpec;
@@ -49,6 +50,7 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
     protected final Optional<TableSample> tableSample;
     protected final Optional<TableSnapshot> tableSnapshot;
     protected final Optional<TableScanParams> scanParams;
+    protected final Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates;
 
     /**
      * Constructor for PhysicalFileScan.
@@ -61,7 +63,24 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
             Collection<Slot> operativeSlots,
             Optional<TableScanParams> scanParams) {
         this(id, PlanType.PHYSICAL_FILE_SCAN, table, qualifier, distributionSpec, groupExpression,
-                logicalProperties, selectedPartitions, tableSample, tableSnapshot, operativeSlots, scanParams);
+                logicalProperties, selectedPartitions, tableSample, tableSnapshot, operativeSlots, scanParams,
+                Optional.empty());
+    }
+
+    /**
+     * Constructor for PhysicalFileScan with pushdown JDBC simple aggregates.
+     */
+    public PhysicalFileScan(RelationId id, ExternalTable table, List<String> qualifier,
+            DistributionSpec distributionSpec, Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties,
+            SelectedPartitions selectedPartitions, Optional<TableSample> tableSample,
+            Optional<TableSnapshot> tableSnapshot,
+            Collection<Slot> operativeSlots,
+            Optional<TableScanParams> scanParams,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
+        this(id, PlanType.PHYSICAL_FILE_SCAN, table, qualifier, distributionSpec, groupExpression,
+                logicalProperties, selectedPartitions, tableSample, tableSnapshot, operativeSlots, scanParams,
+                pushdownJdbcSimpleAggregates);
     }
 
     /**
@@ -88,12 +107,29 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
             Optional<TableSnapshot> tableSnapshot,
             Collection<Slot> operativeSlots,
             Optional<TableScanParams> scanParams) {
+        this(id, type, table, qualifier, distributionSpec, groupExpression,
+                logicalProperties, selectedPartitions, tableSample, tableSnapshot, operativeSlots, scanParams,
+                Optional.empty());
+    }
+
+    /**
+     * Full constructor with pushdown JDBC simple aggregates (PlanType variant).
+     */
+    protected PhysicalFileScan(RelationId id, PlanType type, ExternalTable table, List<String> qualifier,
+            DistributionSpec distributionSpec, Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties,
+            SelectedPartitions selectedPartitions, Optional<TableSample> tableSample,
+            Optional<TableSnapshot> tableSnapshot,
+            Collection<Slot> operativeSlots,
+            Optional<TableScanParams> scanParams,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
         super(id, type, table, qualifier, groupExpression, logicalProperties, operativeSlots);
         this.distributionSpec = distributionSpec;
         this.selectedPartitions = selectedPartitions;
         this.tableSample = tableSample;
         this.tableSnapshot = tableSnapshot;
         this.scanParams = scanParams;
+        this.pushdownJdbcSimpleAggregates = pushdownJdbcSimpleAggregates;
     }
 
     protected PhysicalFileScan(RelationId id, PlanType type, ExternalTable table, List<String> qualifier,
@@ -109,6 +145,7 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
         this.tableSample = tableSample;
         this.tableSnapshot = tableSnapshot;
         this.scanParams = scanParams;
+        this.pushdownJdbcSimpleAggregates = Optional.empty();
     }
 
     public DistributionSpec getDistributionSpec() {
@@ -133,6 +170,10 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
 
     public Optional<TableScanParams> getScanParams() {
         return scanParams;
+    }
+
+    public Optional<List<ConnectorAggregate>> getPushdownJdbcSimpleAggregates() {
+        return pushdownJdbcSimpleAggregates;
     }
 
     @Override
@@ -161,7 +202,8 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
     public PhysicalFileScan withGroupExpression(Optional<GroupExpression> groupExpression) {
         return AbstractPlan.copyWithSameId(this, () -> new PhysicalFileScan(relationId, getTable(), qualifier,
                 distributionSpec, groupExpression, getLogicalProperties(), selectedPartitions, tableSample,
-                tableSnapshot, operativeSlots, scanParams));
+                tableSnapshot, operativeSlots, scanParams,
+                pushdownJdbcSimpleAggregates));
     }
 
     @Override
@@ -169,7 +211,8 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
             Optional<LogicalProperties> logicalProperties, List<Plan> children) {
         return AbstractPlan.copyWithSameId(this, () -> new PhysicalFileScan(relationId, getTable(), qualifier,
                 distributionSpec, groupExpression, logicalProperties.get(), selectedPartitions, tableSample,
-                tableSnapshot, operativeSlots, scanParams));
+                tableSnapshot, operativeSlots, scanParams,
+                pushdownJdbcSimpleAggregates));
     }
 
     @Override

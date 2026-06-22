@@ -98,8 +98,14 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
 
             // Build the SQL query with database-specific formatting
             JdbcQueryBuilder queryBuilder = new JdbcQueryBuilder(dbType, functionConfig, sessionProps);
-            querySql = queryBuilder.buildQuery(
-                    remoteDbName, remoteTableName, columns, filter, limit);
+            if (jdbcHandle.hasPushDownAggregates()) {
+                querySql = queryBuilder.buildAggregateQuery(
+                        remoteDbName, remoteTableName,
+                        jdbcHandle.getPushDownAggregates(), filter, limit);
+            } else {
+                querySql = queryBuilder.buildQuery(
+                        remoteDbName, remoteTableName, columns, filter, limit);
+            }
 
             LOG.debug("JDBC scan query for {}.{}: {}", remoteDbName, remoteTableName, querySql);
         }
@@ -177,9 +183,15 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
             JdbcFunctionPushdownConfig functionConfig = JdbcFunctionPushdownConfig.create(
                     dbType, functionRulesJson, extFuncPushdown);
             JdbcQueryBuilder queryBuilder = new JdbcQueryBuilder(dbType, functionConfig, sessionProps);
-            querySql = queryBuilder.buildQuery(
-                    jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),
-                    columns, filter, -1);
+            if (jdbcHandle.hasPushDownAggregates()) {
+                querySql = queryBuilder.buildAggregateQuery(
+                        jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),
+                        jdbcHandle.getPushDownAggregates(), filter, -1);
+            } else {
+                querySql = queryBuilder.buildQuery(
+                        jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),
+                        columns, filter, -1);
+            }
         }
         Map<String, String> props = new HashMap<>();
         props.put("query", querySql);

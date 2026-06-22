@@ -19,6 +19,7 @@ package org.apache.doris.connector.jdbc;
 
 import org.apache.doris.connector.api.ConnectorType;
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle;
+import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
 import org.apache.doris.connector.api.pushdown.ConnectorAnd;
 import org.apache.doris.connector.api.pushdown.ConnectorBetween;
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef;
@@ -183,6 +184,76 @@ public final class JdbcQueryBuilder {
         }
 
         // ClickHouse FINAL: ensures reads from ReplacingMergeTree see deduplicated rows
+        if (clickhouseQueryFinal && dbType == JdbcDbType.CLICKHOUSE) {
+            sql.append(" SETTINGS final = 1");
+        }
+
+        return sql.toString();
+    }
+
+    /**
+     * Builds a SELECT query that pushes down aggregate functions to the remote database.
+     *
+     * <p>Generates: {@code SELECT FN(col) AS alias, ... FROM db.table [WHERE ...] [LIMIT n]}.
+     * For {@code COUNT(*)}, columnName is {@code "*"}.
+     * DISTINCT is placed inside the function: {@code FN(DISTINCT col)}.
+     *
+     * @param remoteDbName    the remote database name
+     * @param remoteTableName the remote table name
+     * @param aggregates      the aggregate functions to push down
+     * @param filter          the optional filter expression (applied as WHERE)
+     * @param limit           the row limit, or -1 for no limit
+     * @return the complete SQL query string
+     */
+    public String buildAggregateQuery(String remoteDbName, String remoteTableName,
+            List<ConnectorAggregate> aggregates,
+            Optional<ConnectorExpression> filter, long limit) {
+        // Build column name mapping for filter resolution (empty for agg queries —
+        // filters reference base table columns, resolved via ConnectorColumnRef name).
+        Map<String, String> colMapping = new HashMap<>();
+
+        List<String> filterClauses = new ArrayList<>();
+        boolean allFiltersCollected = true;
+        if (filter.isPresent()) {
+            allFiltersCollected = collectFilters(filter.get(), filterClauses, colMapping);
+        }
+
+        StringBuilder sql = new StringBuilder("SELECT ");
+
+        // SQL Server uses SELECT TOP N
+        if (shouldPushDownLimit(limit, allFiltersCollected, filter) && dbType == JdbcDbType.SQLSERVER) {
+            sql.append("TOP ").append(limit).append(" ");
+        }
+
+        // Aggregate columns
+        StringJoiner aggJoiner = new StringJoiner(", ");
+        for (ConnectorAggregate agg : aggregates) {
+            boolean isCountStar = "*".equals(agg.getColumnName());
+            String col = isCountStar ? "*"
+                    : JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, agg.getColumnName());
+            String distinct = agg.isDistinct() && !isCountStar ? "DISTINCT " : "";
+            String alias = JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, agg.getAlias());
+            aggJoiner.add(agg.getFunctionName() + "(" + distinct + col + ") AS " + alias);
+        }
+        sql.append(aggJoiner.toString());
+
+        // FROM clause
+        sql.append(" FROM ");
+        sql.append(JdbcIdentifierQuoter.quoteFullTableName(dbType, remoteDbName, remoteTableName));
+
+        // WHERE clause
+        if (!filterClauses.isEmpty()) {
+            sql.append(" WHERE (");
+            sql.append(String.join(") AND (", filterClauses));
+            sql.append(")");
+        }
+
+        // LIMIT clause
+        if (shouldPushDownLimit(limit, allFiltersCollected, filter) && supportsLimitClause()) {
+            sql.append(" LIMIT ").append(limit);
+        }
+
+        // ClickHouse FINAL
         if (clickhouseQueryFinal && dbType == JdbcDbType.CLICKHOUSE) {
             sql.append(" SETTINGS final = 1");
         }

@@ -465,6 +465,8 @@ public class SessionVariable implements Serializable, Writable {
 
     public static final String ENABLE_PUSH_DOWN_NO_GROUP_AGG = "enable_push_down_no_group_agg";
 
+    public static final String ENABLE_JDBC_PUSHDOWN_AGGREGATE = "enable_jdbc_pushdown_aggregate";
+
     public static final String ENABLE_CBO_STATISTICS = "enable_cbo_statistics";
 
     public static final String ENABLE_SAVE_STATISTICS_SYNC_JOB = "enable_save_statistics_sync_job";
@@ -2177,6 +2179,10 @@ public class SessionVariable implements Serializable, Writable {
 
     @VarAttrDef.VarAttr(name = ENABLE_PUSH_DOWN_NO_GROUP_AGG)
     public boolean enablePushDownNoGroupAgg = true;
+
+    // Control whether to push down simple aggregates (SUM/COUNT/AVG/MIN/MAX) to JDBC catalogs.
+    @VarAttrDef.VarAttr(name = ENABLE_JDBC_PUSHDOWN_AGGREGATE)
+    public boolean enableJdbcPushdownAggregate = false;
 
     /**
      * The current statistics are only used for CBO test,
@@ -4750,6 +4756,10 @@ public class SessionVariable implements Serializable, Writable {
 
     public boolean enablePushDownNoGroupAgg() {
         return enablePushDownNoGroupAgg;
+    }
+
+    public boolean isEnableJdbcPushdownAggregate() {
+        return enableJdbcPushdownAggregate;
     }
 
     public boolean getEnableFunctionPushdown() {

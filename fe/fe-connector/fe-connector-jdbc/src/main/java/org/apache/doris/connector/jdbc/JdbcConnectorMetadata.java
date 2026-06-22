@@ -27,6 +27,8 @@ import org.apache.doris.connector.api.handle.ConnectorColumnHandle;
 import org.apache.doris.connector.api.handle.ConnectorInsertHandle;
 import org.apache.doris.connector.api.handle.ConnectorTableHandle;
 import org.apache.doris.connector.api.handle.PassthroughQueryTableHandle;
+import org.apache.doris.connector.api.pushdown.AggregateApplicationResult;
+import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
 import org.apache.doris.connector.api.write.ConnectorWriteConfig;
 import org.apache.doris.connector.api.write.ConnectorWriteType;
 import org.apache.doris.connector.jdbc.client.JdbcConnectorClient;
@@ -217,6 +219,18 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
     }
 
     // ========= ConnectorPushdownOps =========
+
+    @Override
+    public Optional<AggregateApplicationResult<ConnectorTableHandle>> applyAggregate(
+            ConnectorSession session, ConnectorTableHandle handle,
+            List<ConnectorAggregate> aggregates) {
+        if (!(handle instanceof JdbcTableHandle) || aggregates == null || aggregates.isEmpty()) {
+            return Optional.empty();
+        }
+        JdbcTableHandle jdbcHandle = (JdbcTableHandle) handle;
+        return Optional.of(new AggregateApplicationResult<>(
+                jdbcHandle.withPushDownAggregates(aggregates)));
+    }
 
     @Override
     public boolean supportsCastPredicatePushdown(ConnectorSession session) {

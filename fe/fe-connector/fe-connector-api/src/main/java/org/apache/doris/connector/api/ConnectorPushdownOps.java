@@ -19,6 +19,8 @@ package org.apache.doris.connector.api;
 
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle;
 import org.apache.doris.connector.api.handle.ConnectorTableHandle;
+import org.apache.doris.connector.api.pushdown.AggregateApplicationResult;
+import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
 import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint;
 import org.apache.doris.connector.api.pushdown.FilterApplicationResult;
 import org.apache.doris.connector.api.pushdown.LimitApplicationResult;
@@ -54,6 +56,14 @@ public interface ConnectorPushdownOps {
     default Optional<LimitApplicationResult<ConnectorTableHandle>>
             applyLimit(ConnectorSession session,
                     ConnectorTableHandle handle, long limit) {
+        return Optional.empty();
+    }
+
+    /** Attempts to push simple aggregates into the table scan. */
+    default Optional<AggregateApplicationResult<ConnectorTableHandle>>
+            applyAggregate(ConnectorSession session,
+                    ConnectorTableHandle handle,
+                    List<ConnectorAggregate> aggregates) {
         return Optional.empty();
     }
 

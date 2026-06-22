@@ -784,7 +784,8 @@ public class PhysicalPlanTranslator extends DefaultPlanVisitor<PlanFragment, Pla
                     (PluginDrivenExternalCatalog) table.getCatalog();
             scanNode = PluginDrivenScanNode.create(context.nextPlanNodeId(), tupleDescriptor,
                     false, sv, context.getScanContext(), pluginCatalog,
-                    ((PluginDrivenExternalTable) table));
+                    ((PluginDrivenExternalTable) table),
+                    fileScan.getPushdownJdbcSimpleAggregates());
         } else {
             throw new RuntimeException("do not support table type " + table.getType());
         }

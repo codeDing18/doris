@@ -20,8 +20,10 @@ package org.apache.doris.datasource;
 import org.apache.doris.analysis.CastExpr;
 import org.apache.doris.analysis.Expr;
 import org.apache.doris.analysis.ExprToSqlVisitor;
+import org.apache.doris.analysis.SlotDescriptor;
 import org.apache.doris.analysis.ToSqlParams;
 import org.apache.doris.analysis.TupleDescriptor;
+import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.common.UserException;
 import org.apache.doris.connector.api.Connector;
@@ -30,6 +32,8 @@ import org.apache.doris.connector.api.ConnectorSession;
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle;
 import org.apache.doris.connector.api.handle.ConnectorTableHandle;
 import org.apache.doris.connector.api.handle.PassthroughQueryTableHandle;
+import org.apache.doris.connector.api.pushdown.AggregateApplicationResult;
+import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
 import org.apache.doris.connector.api.pushdown.ConnectorExpression;
 import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint;
 import org.apache.doris.connector.api.pushdown.FilterApplicationResult;
@@ -42,15 +46,20 @@ import org.apache.doris.planner.PlanNodeId;
 import org.apache.doris.planner.ScanContext;
 import org.apache.doris.qe.SessionVariable;
 import org.apache.doris.spi.Split;
+import org.apache.doris.thrift.TColumnCategory;
 import org.apache.doris.thrift.TExplainLevel;
 import org.apache.doris.thrift.TFileAttributes;
 import org.apache.doris.thrift.TFileFormatType;
 import org.apache.doris.thrift.TFileRangeDesc;
+import org.apache.doris.thrift.TFileScanRangeParams;
+import org.apache.doris.thrift.TFileScanSlotInfo;
 import org.apache.doris.thrift.TFileTextScanRangeParams;
 import org.apache.doris.thrift.TTableFormatFileDesc;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+
+import com.google.common.collect.Maps;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -100,6 +109,9 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
     // Set during filter pushdown; may be updated from the original table handle.
     private ConnectorTableHandle currentHandle;
 
+    // Pushdown JDBC simple aggregates (SUM/COUNT/AVG/MIN/MAX), applied to the handle in getSplits().
+    private final Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates;
+
     // Populated from ConnectorScanPlanProvider.getScanNodePropertiesResult()
     private ScanNodePropertiesResult cachedPropertiesResult;
     private Map<String, String> scanNodeProperties;
@@ -110,10 +122,20 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
             boolean needCheckColumnPriv, SessionVariable sv,
             ScanContext scanContext, Connector connector,
             ConnectorSession connectorSession, ConnectorTableHandle tableHandle) {
+        this(id, desc, needCheckColumnPriv, sv, scanContext, connector, connectorSession,
+                tableHandle, Optional.empty());
+    }
+
+    public PluginDrivenScanNode(PlanNodeId id, TupleDescriptor desc,
+            boolean needCheckColumnPriv, SessionVariable sv,
+            ScanContext scanContext, Connector connector,
+            ConnectorSession connectorSession, ConnectorTableHandle tableHandle,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
         super(id, desc, "PluginDrivenScanNode", scanContext, needCheckColumnPriv, sv);
         this.connector = connector;
         this.connectorSession = connectorSession;
         this.currentHandle = tableHandle;
+        this.pushdownJdbcSimpleAggregates = pushdownJdbcSimpleAggregates;
     }
 
     /**
@@ -134,6 +156,26 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
                         "Table handle not found for plugin-driven table: " + dbName + "." + tableName));
         return new PluginDrivenScanNode(id, desc, needCheckColumnPriv, sv,
                 scanContext, connector, session, handle);
+    }
+
+    /**
+     * Creates a PluginDrivenScanNode with pushdown JDBC simple aggregates.
+     */
+    public static PluginDrivenScanNode create(PlanNodeId id, TupleDescriptor desc,
+            boolean needCheckColumnPriv, SessionVariable sv,
+            ScanContext scanContext, PluginDrivenExternalCatalog catalog,
+            PluginDrivenExternalTable table,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
+        Connector connector = catalog.getConnector();
+        ConnectorSession session = catalog.buildConnectorSession();
+        ConnectorMetadata metadata = connector.getMetadata(session);
+        String dbName = table.getDb() != null ? table.getDb().getRemoteName() : "";
+        String tableName = table.getRemoteName();
+        ConnectorTableHandle handle = metadata.getTableHandle(session, dbName, tableName)
+                .orElseThrow(() -> new RuntimeException(
+                        "Table handle not found for plugin-driven table: " + dbName + "." + tableName));
+        return new PluginDrivenScanNode(id, desc, needCheckColumnPriv, sv,
+                scanContext, connector, session, handle, pushdownJdbcSimpleAggregates);
     }
 
     @Override
@@ -352,10 +394,83 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         }
     }
 
+    /**
+     * Attempts to push aggregates down via the SPI applyAggregate() protocol.
+     * Called before getSplits(), after filter/limit/projection pushdown.
+     */
+    private void tryPushDownAggregate() {
+        if (pushdownJdbcSimpleAggregates == null || !pushdownJdbcSimpleAggregates.isPresent()) {
+            return;
+        }
+        ConnectorMetadata metadata = connector.getMetadata(connectorSession);
+        Optional<AggregateApplicationResult<ConnectorTableHandle>> result =
+                metadata.applyAggregate(connectorSession, currentHandle, pushdownJdbcSimpleAggregates.get());
+        if (result.isPresent()) {
+            currentHandle = result.get().getHandle();
+            LOG.debug("Aggregates pushed down via applyAggregate for plugin-driven scan");
+            // Invalidate cached properties so they are rebuilt with the updated handle.
+            scanNodeProperties = null;
+            cachedPropertiesResult = null;
+        }
+    }
+
+    /**
+     * Overrides {@link FileQueryScanNode#initSchemaParams()} to handle slots whose
+     * {@link SlotDescriptor#getColumn()} is null. This happens when simple aggregates
+     * (SUM/COUNT/AVG/MIN/MAX) are pushed down: the scan's output slots are synthetic
+     * aggregate-result slots that have no associated physical column. The base
+     * implementation assumes every slot has a column, which would NPE here.
+     */
+    @Override
+    protected void initSchemaParams() throws UserException {
+        destSlotDescByName = Maps.newHashMap();
+        for (SlotDescriptor slot : desc.getSlots()) {
+            if (slot.getColumn() != null) {
+                destSlotDescByName.put(slot.getColumn().getName(), slot);
+            }
+        }
+        params = new TFileScanRangeParams();
+        params.setDestTupleId(desc.getId().asInt());
+        params.setSrcTupleId(-1);
+        List<String> partitionKeys = getPathPartitionKeys();
+        List<Column> columns = desc.getTable().getBaseSchema(false);
+        params.setNumOfColumnsFromFile(columns.size() - partitionKeys.size());
+        for (SlotDescriptor slot : desc.getSlots()) {
+            TFileScanSlotInfo slotInfo = new TFileScanSlotInfo();
+            slotInfo.setSlotId(slot.getId().asInt());
+            TColumnCategory category = classifyColumn(slot, partitionKeys);
+            slotInfo.setCategory(category);
+            slotInfo.setIsFileSlot(category == TColumnCategory.REGULAR || category == TColumnCategory.GENERATED);
+            params.addToRequiredSlots(slotInfo);
+        }
+        // Skip setDefaultValueExprs() and setColumnPositionMapping() from the base class
+        // because they iterate all slots and assume each has a column. For JDBC scans,
+        // default value expressions and column position mapping are irrelevant (JDBC
+        // reads via JdbcScanRange, not TFileScanRangeParams column mapping).
+        params.setEnableMappingVarbinary(getEnableMappingVarbinary());
+        params.setEnableMappingTimestampTz(getEnableMappingTimestampTz());
+    }
+
+    @Override
+    protected TColumnCategory classifyColumn(SlotDescriptor slot, List<String> partitionKeys) {
+        // Aggregate-output slots have no physical column; treat them as SYNTHESIZED so
+        // they are not treated as file slots (avoids column-position lookups that
+        // assume a real column exists).
+        if (slot.getColumn() == null) {
+            return TColumnCategory.SYNTHESIZED;
+        }
+        if (partitionKeys.contains(slot.getColumn().getName())) {
+            return TColumnCategory.PARTITION_KEY;
+        }
+        return TColumnCategory.REGULAR;
+    }
+
     @Override
     public List<Split> getSplits(int numBackends) throws UserException {
         // Attempt limit and projection pushdown via SPI protocol
         tryPushDownLimit();
+        // Attempt aggregate pushdown via SPI protocol
+        tryPushDownAggregate();
 
         ConnectorScanPlanProvider scanProvider = connector.getScanPlanProvider();
         if (scanProvider == null) {

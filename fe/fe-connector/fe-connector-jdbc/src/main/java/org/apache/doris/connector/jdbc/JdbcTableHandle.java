@@ -18,9 +18,16 @@
 package org.apache.doris.connector.jdbc;
 
 import org.apache.doris.connector.api.handle.ConnectorTableHandle;
+import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
 
 /**
- * Opaque table handle carrying the remote database/table coordinates.
+ * Opaque table handle carrying the remote database/table coordinates
+ * and optional pushdown aggregates.
  */
 public class JdbcTableHandle implements ConnectorTableHandle {
 
@@ -28,10 +35,17 @@ public class JdbcTableHandle implements ConnectorTableHandle {
 
     private final String remoteDbName;
     private final String remoteTableName;
+    private final List<ConnectorAggregate> pushDownAggregates;
 
     public JdbcTableHandle(String remoteDbName, String remoteTableName) {
+        this(remoteDbName, remoteTableName, Collections.emptyList());
+    }
+
+    public JdbcTableHandle(String remoteDbName, String remoteTableName,
+            List<ConnectorAggregate> pushDownAggregates) {
         this.remoteDbName = remoteDbName;
         this.remoteTableName = remoteTableName;
+        this.pushDownAggregates = new ArrayList<>(pushDownAggregates);
     }
 
     public String getRemoteDbName() {
@@ -42,8 +56,40 @@ public class JdbcTableHandle implements ConnectorTableHandle {
         return remoteTableName;
     }
 
+    public List<ConnectorAggregate> getPushDownAggregates() {
+        return pushDownAggregates;
+    }
+
+    public boolean hasPushDownAggregates() {
+        return !pushDownAggregates.isEmpty();
+    }
+
+    public JdbcTableHandle withPushDownAggregates(List<ConnectorAggregate> aggregates) {
+        return new JdbcTableHandle(remoteDbName, remoteTableName, aggregates);
+    }
+
     @Override
     public String toString() {
-        return "JdbcTableHandle{" + remoteDbName + "." + remoteTableName + "}";
+        return "JdbcTableHandle{" + remoteDbName + "." + remoteTableName
+                + (hasPushDownAggregates() ? ", aggs=" + pushDownAggregates : "") + "}";
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof JdbcTableHandle)) {
+            return false;
+        }
+        JdbcTableHandle that = (JdbcTableHandle) o;
+        return Objects.equals(remoteDbName, that.remoteDbName)
+                && Objects.equals(remoteTableName, that.remoteTableName)
+                && Objects.equals(pushDownAggregates, that.pushDownAggregates);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(remoteDbName, remoteTableName, pushDownAggregates);
     }
 }

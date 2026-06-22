@@ -130,6 +130,7 @@ import org.apache.doris.nereids.rules.rewrite.PullUpProjectUnderTopN;
 import org.apache.doris.nereids.rules.rewrite.PushCountIntoUnionAll;
 import org.apache.doris.nereids.rules.rewrite.PushDownAggThroughJoinOnPkFk;
 import org.apache.doris.nereids.rules.rewrite.PushDownAggThroughJoinOneSide;
+import org.apache.doris.nereids.rules.rewrite.PushDownAggregateToJdbcScan;
 import org.apache.doris.nereids.rules.rewrite.PushDownAggWithDistinctThroughJoinOneSide;
 import org.apache.doris.nereids.rules.rewrite.PushDownDistinctThroughJoin;
 import org.apache.doris.nereids.rules.rewrite.PushDownEncodeSlot;
@@ -719,6 +720,9 @@ public class Rewriter extends AbstractBatchJobExecutor {
                         )
                 ),
                 // TODO: these rules should be implementation rules, and generate alternative physical plans.
+                topic("JDBC simple aggregate pushdown",
+                        topDown(new PushDownAggregateToJdbcScan())
+                ),
                 topic("Table/Physical optimization",
                         cascadesContext -> cascadesContext.rewritePlanContainsTypes(LogicalCatalogRelation.class),
                         topDown(
