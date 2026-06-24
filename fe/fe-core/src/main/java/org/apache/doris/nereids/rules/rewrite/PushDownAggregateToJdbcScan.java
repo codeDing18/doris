@@ -37,6 +37,7 @@ import org.apache.doris.nereids.trees.expressions.functions.agg.Sum;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.logical.LogicalAggregate;
 import org.apache.doris.nereids.trees.plans.logical.LogicalFileScan;
+import org.apache.doris.nereids.trees.plans.logical.LogicalFilter;
 import org.apache.doris.nereids.trees.plans.logical.LogicalProject;
 import org.apache.doris.qe.ConnectContext;
 
@@ -47,19 +48,26 @@ import com.google.common.annotations.VisibleForTesting;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 /**
  * Pushes simple aggregate functions (SUM/COUNT/AVG/MIN/MAX) down to JDBC catalogs
  * (currently MySQL only) for global aggregates (no GROUP BY).
  *
- * <p>The rule matches {@code LogicalAggregate(LogicalFileScan)} or
- * {@code LogicalAggregate(LogicalProject(LogicalFileScan))} on a JDBC catalog. It
- * collects supported aggregate functions into {@link ConnectorAggregate} objects,
- * attaches them to the scan via {@code pushdownJdbcSimpleAggregates}, and replaces
- * the aggregate (and optional project) with the scan alone. The scan's output is
- * the aggregate's output so that upper operators (having/order/limit) keep valid.
+ * <p>Supported shapes (with optional LogicalFilter and LogicalProject layers):
+ * <ul>
+ *   <li>{@code aggregate(scan)}
+ *   <li>{@code aggregate(project(scan))}
+ *   <li>{@code aggregate(filter(scan))}
+ *   <li>{@code aggregate(filter(project(scan)))}
+ * </ul>
+ *
+ * <p>The rule collects supported aggregate functions into {@link ConnectorAggregate}
+ * objects, attaches them to the scan via {@code pushdownJdbcSimpleAggregates}, and
+ * replaces the aggregate (and optional project) with the scan alone. If a filter is
+ * present, it is kept above the scan so its conjuncts are applied as the JDBC WHERE
+ * clause during scan-node finalization. The scan's output is the aggregate's output
+ * so that upper operators (having/order/limit) keep valid.
  *
  * <p>Conservatively bails out if any function or argument is unsupported.
  */
@@ -69,13 +77,23 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
 
     @Override
     public Rule build() {
-        return logicalAggregate().then(this::tryPushDown).toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN);
+        return logicalAggregate(
+                // Shape 1: aggregate(scan)
+                logicalFileScan(),
+                // Shape 2: aggregate(project(scan))
+                logicalProject(logicalFileScan()),
+                // Shape 3: aggregate(filter(scan))
+                logicalFilter(logicalFileScan()),
+                // Shape 4: aggregate(filter(project(scan)))
+                logicalFilter(logicalProject(logicalFileScan())))
+                .then(this::tryPushDown)
+                .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN);
     }
 
     /**
      * Tries to push down the aggregate to a JDBC file scan. Returns null (no rewrite)
-     * when the shape is not {@code agg(scan)} or {@code agg(project(scan))} on a JDBC
-     * catalog, the session variable is disabled, or any aggregate is unsupported.
+     * when the session variable is disabled, any aggregate is unsupported, or the
+     * scan is not on a JDBC catalog.
      */
     private Plan tryPushDown(LogicalAggregate<Plan> aggregate) {
         if (!enableJdbcPushDownAggregate()) {
@@ -90,25 +108,23 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, aggregate has DISTINCT arguments");
             return null;
         }
-        LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, child class={}",
-                aggregate.getOutput(), aggregate.child(0).getClass().getSimpleName());
 
-        // Unwrap optional LogicalProject to reach the file scan.
+        // Unwrap optional LogicalFilter and LogicalProject layers to reach the file scan.
         Plan child = aggregate.child(0);
+        LogicalFilter<? extends Plan> filter = null;
         LogicalProject<? extends Plan> project = null;
+
+        if (child instanceof LogicalFilter) {
+            filter = (LogicalFilter<? extends Plan>) child;
+            child = filter.child(0);
+        }
         if (child instanceof LogicalProject) {
             project = (LogicalProject<? extends Plan>) child;
-            if (project.child(0) instanceof LogicalFileScan) {
-                child = project.child(0);
-            } else {
-                LOG.info("JDBC_AGG_PUSHDOWN: skip, project child is not LogicalFileScan but {}",
-                        project.child(0).getClass().getSimpleName());
-                return null;
-            }
+            child = project.child(0);
         }
         if (!(child instanceof LogicalFileScan)) {
-            LOG.info("JDBC_AGG_PUSHDOWN: skip, aggregate child is not LogicalFileScan but {}",
-                    aggregate.child(0).getClass().getSimpleName());
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, leaf child is not LogicalFileScan but {}",
+                    child.getClass().getSimpleName());
             return null;
         }
         LogicalFileScan fileScan = (LogicalFileScan) child;
@@ -118,13 +134,26 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
             return null;
         }
 
-        Plan result = pushdownAggregate(aggregate, project, fileScan);
-        if (result == null) {
+        LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, hasFilter={}, hasProject={}",
+                aggregate.getOutput(), filter != null, project != null);
+
+        Plan rewrittenScan = pushdownAggregate(aggregate, project, fileScan);
+        if (rewrittenScan == null) {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, some aggregate function or argument is unsupported");
-        } else {
-            LOG.info("JDBC_AGG_PUSHDOWN: pushed down aggregates to JDBC scan for table {}",
-                    fileScan.getTable() == null ? "null" : fileScan.getTable().getName());
+            return null;
         }
+
+        // If a filter is present, keep it above the scan so its conjuncts are applied
+        // as the JDBC WHERE clause during scan-node finalization. If a project is
+        // present, it is eliminated because the scan's output already matches the
+        // aggregate's output.
+        Plan result = rewrittenScan;
+        if (filter != null) {
+            result = filter.withConjunctsAndChild(filter.getConjuncts(), rewrittenScan);
+        }
+
+        LOG.info("JDBC_AGG_PUSHDOWN: pushed down aggregates to JDBC scan for table {}",
+                fileScan.getTable() == null ? "null" : fileScan.getTable().getName());
         return result;
     }
 
@@ -162,26 +191,8 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
     }
 
     /**
-     * Returns true if the aggregate function is supported for JDBC pushdown:
-     * SUM/COUNT/AVG/MIN/MAX with a single SlotReference argument, or COUNT(*).
-     */
-    private boolean isSupported(AggregateFunction func) {
-        if (func instanceof Sum || func instanceof Avg || func instanceof Min || func instanceof Max) {
-            return func.arity() == 1 && func.child(0) instanceof SlotReference;
-        }
-        if (func instanceof Count) {
-            Count count = (Count) func;
-            if (count.isCountStar()) {
-                return true;
-            }
-            return count.arity() == 1 && count.child(0) instanceof SlotReference;
-        }
-        return false;
-    }
-
-    /**
-     * Builds the new scan carrying the aggregates. Returns the original aggregate if
-     * any aggregate function or argument is unsupported.
+     * Builds the new scan carrying the aggregates. Returns null if any aggregate
+     * function or argument is unsupported.
      */
     private Plan pushdownAggregate(LogicalAggregate<? extends Plan> aggregate,
             LogicalProject<? extends Plan> project, LogicalFileScan fileScan) {
