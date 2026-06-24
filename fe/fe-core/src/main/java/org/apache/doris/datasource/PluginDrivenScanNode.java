@@ -433,7 +433,7 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         LOG.info("JDBC_AGG_PUSHDOWN: initSchemaParams start, hasAggPushdown={}, slots={}",
                 hasAggPushdown,
                 desc.getSlots().stream()
-                        .map(s -> "Slot(id=" + s.getId() + ",name=" + s.getColumnName()
+                        .map(s -> "Slot(id=" + s.getId() + ",label=" + s.getLabel()
                                 + ",colNull=" + (s.getColumn() == null) + ")")
                         .collect(Collectors.toList()));
         destSlotDescByName = Maps.newHashMap();
