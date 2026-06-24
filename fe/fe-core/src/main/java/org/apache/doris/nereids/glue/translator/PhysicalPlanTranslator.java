@@ -782,6 +782,22 @@ public class PhysicalPlanTranslator extends DefaultPlanVisitor<PlanFragment, Pla
         } else if (table instanceof PluginDrivenExternalTable) {
             PluginDrivenExternalCatalog pluginCatalog =
                     (PluginDrivenExternalCatalog) table.getCatalog();
+            // When simple aggregates are pushed down, the scan's output slots are
+            // synthetic aggregate-result slots without a physical Column. BE's JDBC
+            // reader maps result columns by slot col_name, which is derived from
+            // materializedColumnName. Set it to the slot's name (which matches the
+            // SQL alias) so BE can resolve the result columns.
+            if (fileScan.getPushdownJdbcSimpleAggregates().isPresent()) {
+                for (Slot slot : slots) {
+                    SlotRef slotRef = context.findSlotRef(slot.getExprId());
+                    if (slotRef != null) {
+                        SlotDescriptor slotDesc = slotRef.getDesc();
+                        if (slotDesc != null && slotDesc.getColumn() == null) {
+                            slotDesc.setMaterializedColumnName(slot.getName());
+                        }
+                    }
+                }
+            }
             scanNode = PluginDrivenScanNode.create(context.nextPlanNodeId(), tupleDescriptor,
                     false, sv, context.getScanContext(), pluginCatalog,
                     ((PluginDrivenExternalTable) table),
