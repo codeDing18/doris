@@ -82,19 +82,19 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         return ImmutableList.of(
                 // Shape 1: aggregate(scan)
                 logicalAggregate(logicalFileScan().when(this::isJdbcCatalog))
-                        .then(this::tryPushDown)
+                        .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
                         .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
                 // Shape 2: aggregate(project(scan))
                 logicalAggregate(logicalProject(logicalFileScan().when(this::isJdbcCatalog)))
-                        .then(this::tryPushDown)
+                        .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
                         .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
                 // Shape 3: aggregate(filter(scan))
                 logicalAggregate(logicalFilter(logicalFileScan().when(this::isJdbcCatalog)))
-                        .then(this::tryPushDown)
+                        .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
                         .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
                 // Shape 4: aggregate(filter(project(scan)))
                 logicalAggregate(logicalFilter(logicalProject(logicalFileScan().when(this::isJdbcCatalog))))
-                        .then(this::tryPushDown)
+                        .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
                         .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN));
     }
 
@@ -103,7 +103,7 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
      * when the session variable is disabled, any aggregate is unsupported, or the
      * scan is not on a JDBC catalog.
      */
-    private Plan tryPushDown(LogicalAggregate<Plan> aggregate) {
+    private Plan tryPushDown(LogicalAggregate<? extends Plan> aggregate) {
         if (!enableJdbcPushDownAggregate()) {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, enable_jdbc_pushdown_aggregate=false");
             return null;
