@@ -94,7 +94,22 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
             Collection<Slot> operativeSlots, Optional<TableScanParams> scanParams) {
         this(id, PlanType.PHYSICAL_FILE_SCAN, table, qualifier, distributionSpec, groupExpression,
                 logicalProperties, physicalProperties, statistics, selectedPartitions, tableSample, tableSnapshot,
-                operativeSlots, scanParams);
+                operativeSlots, scanParams, Optional.empty());
+    }
+
+    /**
+     * Constructor for PhysicalFileScan with physicalProperties, statistics, and pushdown JDBC aggregates.
+     */
+    public PhysicalFileScan(RelationId id, ExternalTable table, List<String> qualifier,
+            DistributionSpec distributionSpec, Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties, PhysicalProperties physicalProperties,
+            Statistics statistics, SelectedPartitions selectedPartitions,
+            Optional<TableSample> tableSample, Optional<TableSnapshot> tableSnapshot,
+            Collection<Slot> operativeSlots, Optional<TableScanParams> scanParams,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
+        this(id, PlanType.PHYSICAL_FILE_SCAN, table, qualifier, distributionSpec, groupExpression,
+                logicalProperties, physicalProperties, statistics, selectedPartitions, tableSample, tableSnapshot,
+                operativeSlots, scanParams, pushdownJdbcSimpleAggregates);
     }
 
     /**
