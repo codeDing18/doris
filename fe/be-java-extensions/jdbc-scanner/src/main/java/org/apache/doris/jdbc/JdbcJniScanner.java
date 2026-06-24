@@ -181,8 +181,11 @@ public class JdbcJniScanner extends JniScanner {
             int rsColumnCount = resultSetMetaData.getColumnCount();
             Map<String, Integer> rsColumnMap = new HashMap<>(rsColumnCount);
             for (int i = 1; i <= rsColumnCount; i++) {
-                String colName = resultSetMetaData.getColumnLabel(i).toLowerCase();
-                rsColumnMap.put(colName, i);
+                String colLabel = resultSetMetaData.getColumnLabel(i);
+                String colName = resultSetMetaData.getColumnName(i);
+                LOG.info("JdbcJniScanner: ResultSet column " + i + ": label='" + colLabel
+                        + "', name='" + colName + "', lowerLabel='" + colLabel.toLowerCase() + "'");
+                rsColumnMap.put(colLabel.toLowerCase(), i);
             }
             for (int i = 0; i < fields.length; i++) {
                 String fieldName = fields[i].toLowerCase();
@@ -192,10 +195,12 @@ public class JdbcJniScanner extends JniScanner {
                 } else {
                     // Fallback to positional mapping if name not found
                     columnIndexMapping[i] = i + 1;
-                    LOG.warn("Column '" + fields[i] + "' not found in ResultSet by name, "
-                            + "falling back to positional index " + (i + 1));
+                    LOG.warn("JdbcJniScanner: Column '" + fields[i] + "' (lower='" + fieldName
+                            + "') not found in ResultSet by name, falling back to positional index " + (i + 1));
                 }
             }
+            LOG.info("JdbcJniScanner: fields=" + java.util.Arrays.toString(fields)
+                    + ", columnIndexMapping=" + java.util.Arrays.toString(columnIndexMapping));
 
             block = new ArrayList<>(types.length);
 
@@ -288,6 +293,7 @@ public class JdbcJniScanner extends JniScanner {
 
             readTime += System.nanoTime() - startRead;
             readRows += curRows;
+            LOG.info("JdbcJniScanner: getNext read " + curRows + " row(s), total=" + readRows);
             return curRows;
         } catch (Exception e) {
             LOG.warn("JdbcJniScanner getNext failed: " + e.getMessage(), e);
