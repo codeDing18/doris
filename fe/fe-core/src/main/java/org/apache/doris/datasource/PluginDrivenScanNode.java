@@ -421,11 +421,12 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
     }
 
     /**
-     * Overrides {@link FileQueryScanNode#initSchemaParams()} to handle slots whose
-     * {@link SlotDescriptor#getColumn()} is null. This happens when simple aggregates
-     * (SUM/COUNT/AVG/MIN/MAX) are pushed down: the scan's output slots are synthetic
-     * aggregate-result slots that have no associated physical column. The base
-     * implementation assumes every slot has a column, which would NPE here.
+     * Overrides {@link FileQueryScanNode#initSchemaParams()} to skip
+     * {@code setDefaultValueExprs()} and {@code setColumnPositionMapping()}.
+     * JDBC scans read data via the SQL query in the scan range, not via file
+     * column-position mapping, so those steps are irrelevant and would fail
+     * for aggregate-pushdown columns (whose virtual columns are not in the
+     * table schema).
      */
     @Override
     protected void initSchemaParams() throws UserException {
@@ -434,13 +435,11 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
                 hasAggPushdown,
                 desc.getSlots().stream()
                         .map(s -> "Slot(id=" + s.getId() + ",label=" + s.getLabel()
-                                + ",colNull=" + (s.getColumn() == null) + ")")
+                                + ",colName=" + (s.getColumn() == null ? "null" : s.getColumn().getName()) + ")")
                         .collect(Collectors.toList()));
         destSlotDescByName = Maps.newHashMap();
         for (SlotDescriptor slot : desc.getSlots()) {
-            if (slot.getColumn() != null) {
-                destSlotDescByName.put(slot.getColumn().getName(), slot);
-            }
+            destSlotDescByName.put(slot.getColumn().getName(), slot);
         }
         params = new TFileScanRangeParams();
         params.setDestTupleId(desc.getId().asInt());
@@ -456,10 +455,6 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
             slotInfo.setIsFileSlot(category == TColumnCategory.REGULAR || category == TColumnCategory.GENERATED);
             params.addToRequiredSlots(slotInfo);
         }
-        // Skip setDefaultValueExprs() and setColumnPositionMapping() from the base class
-        // because they iterate all slots and assume each has a column. For JDBC scans,
-        // default value expressions and column position mapping are irrelevant (JDBC
-        // reads via JdbcScanRange, not TFileScanRangeParams column mapping).
         params.setEnableMappingVarbinary(getEnableMappingVarbinary());
         params.setEnableMappingTimestampTz(getEnableMappingTimestampTz());
         // Apply aggregate pushdown early (before EXPLAIN/getSplits generate SQL), so the
@@ -467,24 +462,6 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         // call to getOrLoadScanNodeProperties()/getSplits() reads currentHandle.
         tryPushDownAggregate();
         LOG.info("JDBC_AGG_PUSHDOWN: initSchemaParams done, currentHandle={}", currentHandle);
-    }
-
-    @Override
-    protected TColumnCategory classifyColumn(SlotDescriptor slot, List<String> partitionKeys) {
-        boolean hasAggPushdown = pushdownJdbcSimpleAggregates != null
-                && pushdownJdbcSimpleAggregates.isPresent();
-        // When simple aggregates are pushed down, the aggregate-output slots have no
-        // physical column, but their values come from the JDBC query result columns.
-        // They MUST be treated as REGULAR file slots so that BE includes them in
-        // required_fields (the column list read from the JDBC ResultSet). Without this,
-        // BE reads 0 columns and returns empty data even though MySQL returns a row.
-        if (slot.getColumn() == null) {
-            return hasAggPushdown ? TColumnCategory.REGULAR : TColumnCategory.SYNTHESIZED;
-        }
-        if (partitionKeys.contains(slot.getColumn().getName())) {
-            return TColumnCategory.PARTITION_KEY;
-        }
-        return TColumnCategory.REGULAR;
     }
 
     @Override
@@ -683,6 +660,9 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
      * Builds column handles from the tuple descriptor's slot descriptors.
      * These tell the connector which columns are needed for the query,
      * enabling optimized column selection (e.g., SELECT col1, col2 instead of SELECT *).
+     * For aggregate-pushdown slots, the virtual column name (e.g. "max(id)") is not a
+     * physical column, so it won't match any handle — that's fine because planScan()
+     * builds the aggregate SQL from the handle's push-down aggregates, not from columns.
      */
     private List<ConnectorColumnHandle> buildColumnHandles() {
         ConnectorMetadata metadata = connector.getMetadata(connectorSession);
@@ -693,11 +673,9 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         }
         List<ConnectorColumnHandle> selected = new ArrayList<>();
         for (org.apache.doris.analysis.SlotDescriptor slot : desc.getSlots()) {
-            if (slot.getColumn() != null) {
-                ConnectorColumnHandle ch = allHandles.get(slot.getColumn().getName());
-                if (ch != null) {
-                    selected.add(ch);
-                }
+            ConnectorColumnHandle ch = allHandles.get(slot.getColumn().getName());
+            if (ch != null) {
+                selected.add(ch);
             }
         }
         return selected;

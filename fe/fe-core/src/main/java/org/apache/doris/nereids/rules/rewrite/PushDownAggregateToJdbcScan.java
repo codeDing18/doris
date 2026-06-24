@@ -17,6 +17,7 @@
 
 package org.apache.doris.nereids.rules.rewrite;
 
+import org.apache.doris.catalog.Column;
 import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
 import org.apache.doris.datasource.PluginDrivenExternalCatalog;
 import org.apache.doris.datasource.PluginDrivenExternalTable;
@@ -256,12 +257,22 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
 
         LOG.info("JDBC_AGG_PUSHDOWN: built {} aggregate(s), rewriting plan", aggregates.size());
 
-        // Build new scan: output = aggregate output (reuse slots so upper operators
-        // like having/order/limit keep their slot references valid), and attach the
-        // pushdown aggregates so the ScanNode can apply them to the remote handle.
+        // Build new scan output: rebuild each aggregate output slot with a virtual Column
+        // so that downstream SlotDescriptor.getColumn() is non-null. This lets the standard
+        // JDBC scan path (DescriptorToThriftConverter, PluginDrivenScanNode) work without
+        // null-column workarounds. The virtual Column's name matches the slot name (e.g.
+        // "max(id)"), which equals the SQL alias and MySQL's getColumnLabel().
+        List<Slot> newOutput = new ArrayList<>();
+        for (Slot slot : aggOutputSlots) {
+            SlotReference slotRef = (SlotReference) slot;
+            Column virtualColumn = new Column(slot.getName(),
+                    slotRef.getDataType().toCatalogDataType(), true);
+            newOutput.add(slotRef.withColumn(virtualColumn));
+        }
+
         return fileScan
                 .withPushdownJdbcSimpleAggregates(aggregates)
-                .withCachedOutput(aggregate.getOutput());
+                .withCachedOutput(newOutput);
     }
 
     /**

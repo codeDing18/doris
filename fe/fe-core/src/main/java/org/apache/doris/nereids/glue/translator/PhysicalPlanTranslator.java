@@ -782,38 +782,10 @@ public class PhysicalPlanTranslator extends DefaultPlanVisitor<PlanFragment, Pla
         } else if (table instanceof PluginDrivenExternalTable) {
             PluginDrivenExternalCatalog pluginCatalog =
                     (PluginDrivenExternalCatalog) table.getCatalog();
-            boolean hasAggPushdown = fileScan.getPushdownJdbcSimpleAggregates().isPresent();
             LOG.info("JDBC_AGG_PUSHDOWN: visitPhysicalFileScan for table {}, hasAggPushdown={}, slots={}",
-                    table.getName(), hasAggPushdown,
+                    table.getName(), fileScan.getPushdownJdbcSimpleAggregates().isPresent(),
                     slots.stream().map(s -> s.getName() + "(exprId=" + s.getExprId() + ")")
                             .collect(Collectors.toList()));
-            // When simple aggregates are pushed down, the scan's output slots are
-            // synthetic aggregate-result slots without a physical Column. BE's JDBC
-            // reader maps result columns by slot col_name, which is derived from
-            // materializedColumnName. Set it to the slot's name (which matches the
-            // SQL alias) so BE can resolve the result columns.
-            if (hasAggPushdown) {
-                for (Slot slot : slots) {
-                    SlotRef slotRef = context.findSlotRef(slot.getExprId());
-                    if (slotRef == null) {
-                        LOG.info("JDBC_AGG_PUSHDOWN: cannot find SlotRef for slot {}", slot.getName());
-                        continue;
-                    }
-                    SlotDescriptor slotDesc = slotRef.getDesc();
-                    if (slotDesc == null) {
-                        LOG.info("JDBC_AGG_PUSHDOWN: SlotRef has no SlotDescriptor for slot {}", slot.getName());
-                        continue;
-                    }
-                    if (slotDesc.getColumn() != null) {
-                        LOG.info("JDBC_AGG_PUSHDOWN: slot {} has column {}, no need to set materializedColumnName",
-                                slot.getName(), slotDesc.getColumn().getName());
-                        continue;
-                    }
-                    slotDesc.setMaterializedColumnName(slot.getName());
-                    LOG.info("JDBC_AGG_PUSHDOWN: set materializedColumnName='{}' for column-less slot {}",
-                            slot.getName(), slot.getName());
-                }
-            }
             scanNode = PluginDrivenScanNode.create(context.nextPlanNodeId(), tupleDescriptor,
                     false, sv, context.getScanContext(), pluginCatalog,
                     ((PluginDrivenExternalTable) table),
