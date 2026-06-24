@@ -61,7 +61,7 @@ import java.util.Set;
  *   <li>{@code aggregate(scan)}
  *   <li>{@code aggregate(project(scan))}
  *   <li>{@code aggregate(filter(scan))}
- *   <li>{@code aggregate(filter(project(scan)))}
+ *   <li>{@code aggregate(project(filter(scan)))}
  * </ul>
  *
  * <p>The rule collects supported aggregate functions into {@link ConnectorAggregate}
@@ -142,24 +142,43 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, hasFilter={}, hasProject={}",
                 aggregate.getOutput(), filter != null, project != null);
 
-        Plan rewrittenScan = pushdownAggregate(aggregate, project, fileScan);
+        if (filter != null) {
+            return pushdownAggregateWithFilter(aggregate, filter, project, fileScan);
+        }
+        return pushdownAggregateWithoutFilter(aggregate, project, fileScan);
+    }
+
+    /**
+     * Pushes down aggregates without a filter: returns the rewritten scan directly.
+     */
+    private Plan pushdownAggregateWithoutFilter(LogicalAggregate<? extends Plan> aggregate,
+            LogicalProject<? extends Plan> project, LogicalFileScan fileScan) {
+        Plan rewrittenScan = buildAggregatedScan(aggregate, project, fileScan);
         if (rewrittenScan == null) {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, some aggregate function or argument is unsupported");
             return null;
         }
-
-        // If a filter is present, keep it above the scan so its conjuncts are applied
-        // as the JDBC WHERE clause during scan-node finalization. If a project is
-        // present, it is eliminated because the scan's output already matches the
-        // aggregate's output.
-        Plan result = rewrittenScan;
-        if (filter != null) {
-            result = filter.withConjunctsAndChild(filter.getConjuncts(), rewrittenScan);
-        }
-
         LOG.info("JDBC_AGG_PUSHDOWN: pushed down aggregates to JDBC scan for table {}",
                 fileScan.getTable() == null ? "null" : fileScan.getTable().getName());
-        return result;
+        return rewrittenScan;
+    }
+
+    /**
+     * Pushes down aggregates with a filter: returns filter(rewrittenScan) so the
+     * filter's conjuncts are applied as the JDBC WHERE clause during scan-node
+     * finalization.
+     */
+    private Plan pushdownAggregateWithFilter(LogicalAggregate<? extends Plan> aggregate,
+            LogicalFilter<? extends Plan> filter, LogicalProject<? extends Plan> project,
+            LogicalFileScan fileScan) {
+        Plan rewrittenScan = buildAggregatedScan(aggregate, project, fileScan);
+        if (rewrittenScan == null) {
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, some aggregate function or argument is unsupported");
+            return null;
+        }
+        LOG.info("JDBC_AGG_PUSHDOWN: pushed down aggregates to JDBC scan for table {} with filter",
+                fileScan.getTable() == null ? "null" : fileScan.getTable().getName());
+        return filter.withConjunctsAndChild(filter.getConjuncts(), rewrittenScan);
     }
 
     @VisibleForTesting
@@ -217,7 +236,7 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
      * Builds the new scan carrying the aggregates. Returns null if any aggregate
      * function or argument is unsupported.
      */
-    private Plan pushdownAggregate(LogicalAggregate<? extends Plan> aggregate,
+    private Plan buildAggregatedScan(LogicalAggregate<? extends Plan> aggregate,
             LogicalProject<? extends Plan> project, LogicalFileScan fileScan) {
         // Derive (aggFunction, outputSlot) pairs from the output expressions.
         // Each output expression must wrap exactly one aggregate function (no GROUP BY).
