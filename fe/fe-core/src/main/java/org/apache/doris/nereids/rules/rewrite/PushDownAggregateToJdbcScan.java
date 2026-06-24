@@ -79,13 +79,13 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
     public Rule build() {
         return logicalAggregate(
                 // Shape 1: aggregate(scan)
-                logicalFileScan(),
+                logicalFileScan().when(this::isMysqlJdbcScan),
                 // Shape 2: aggregate(project(scan))
-                logicalProject(logicalFileScan()),
+                logicalProject(logicalFileScan().when(this::isMysqlJdbcScan)),
                 // Shape 3: aggregate(filter(scan))
-                logicalFilter(logicalFileScan()),
+                logicalFilter(logicalFileScan().when(this::isMysqlJdbcScan)),
                 // Shape 4: aggregate(filter(project(scan)))
-                logicalFilter(logicalProject(logicalFileScan())))
+                logicalFilter(logicalProject(logicalFileScan().when(this::isMysqlJdbcScan))))
                 .then(this::tryPushDown)
                 .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN);
     }
@@ -128,11 +128,6 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
             return null;
         }
         LogicalFileScan fileScan = (LogicalFileScan) child;
-        if (!isJdbcCatalog(fileScan)) {
-            LOG.info("JDBC_AGG_PUSHDOWN: skip, not a supported JDBC catalog (table={})",
-                    fileScan.getTable() == null ? "null" : fileScan.getTable().getName());
-            return null;
-        }
 
         LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, hasFilter={}, hasProject={}",
                 aggregate.getOutput(), filter != null, project != null);
@@ -164,7 +159,7 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
     }
 
     @VisibleForTesting
-    protected boolean isJdbcCatalog(LogicalFileScan fileScan) {
+    protected boolean isMysqlJdbcScan(LogicalFileScan fileScan) {
         if (!(fileScan.getTable() instanceof PluginDrivenExternalTable)) {
             LOG.info("JDBC_AGG_PUSHDOWN: table is not PluginDrivenExternalTable but {}",
                     fileScan.getTable() == null ? "null" : fileScan.getTable().getClass().getSimpleName());
