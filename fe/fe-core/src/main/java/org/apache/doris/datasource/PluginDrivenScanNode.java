@@ -113,8 +113,8 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
     // Pushdown JDBC simple aggregates (SUM/COUNT/AVG/MIN/MAX), applied to the handle in getSplits().
     private final Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates;
 
-    // Pushdown JDBC filter conjuncts (legacy Expr), applied as JDBC WHERE clause in getSplits().
-    private final List<Expr> pushdownJdbcFilterConjuncts;
+    // Pushdown JDBC filter conjuncts (Nereids Expression), applied as JDBC WHERE clause in getSplits().
+    private final List<org.apache.doris.nereids.trees.expressions.Expression> pushdownJdbcFilterExprs;
 
     // Populated from ConnectorScanPlanProvider.getScanNodePropertiesResult()
     private ScanNodePropertiesResult cachedPropertiesResult;
@@ -144,13 +144,13 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
             ScanContext scanContext, Connector connector,
             ConnectorSession connectorSession, ConnectorTableHandle tableHandle,
             Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates,
-            List<Expr> pushdownJdbcFilterConjuncts) {
+            List<org.apache.doris.nereids.trees.expressions.Expression> pushdownJdbcFilterExprs) {
         super(id, desc, "PluginDrivenScanNode", scanContext, needCheckColumnPriv, sv);
         this.connector = connector;
         this.connectorSession = connectorSession;
         this.currentHandle = tableHandle;
         this.pushdownJdbcSimpleAggregates = pushdownJdbcSimpleAggregates;
-        this.pushdownJdbcFilterConjuncts = pushdownJdbcFilterConjuncts;
+        this.pushdownJdbcFilterExprs = pushdownJdbcFilterExprs;
     }
 
     /**
@@ -190,7 +190,7 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
             ScanContext scanContext, PluginDrivenExternalCatalog catalog,
             PluginDrivenExternalTable table,
             Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates,
-            List<Expr> pushdownJdbcFilterConjuncts) {
+            List<org.apache.doris.nereids.trees.expressions.Expression> pushdownJdbcFilterExprs) {
         Connector connector = catalog.getConnector();
         ConnectorSession session = catalog.buildConnectorSession();
         ConnectorMetadata metadata = connector.getMetadata(session);
@@ -201,7 +201,7 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
                         "Table handle not found for plugin-driven table: " + dbName + "." + tableName));
         return new PluginDrivenScanNode(id, desc, needCheckColumnPriv, sv,
                 scanContext, connector, session, handle, pushdownJdbcSimpleAggregates,
-                pushdownJdbcFilterConjuncts);
+                pushdownJdbcFilterExprs);
     }
 
     @Override
@@ -742,32 +742,40 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
      * Filters out CAST-containing predicates when the connector does not support CAST pushdown.
      */
     private Optional<ConnectorExpression> buildRemainingFilter() {
-        // Merge conjuncts from filter pushdown with pushdown JDBC filter conjuncts
-        // (the latter come from aggregate-pushdown where the filter node is eliminated).
-        List<Expr> allConjuncts = new ArrayList<>();
-        if (conjuncts != null) {
-            allConjuncts.addAll(conjuncts);
+        // If we have pushdown JDBC filter expressions (from aggregate-pushdown where the
+        // filter node is eliminated), convert them directly to ConnectorExpression.
+        if (pushdownJdbcFilterExprs != null && !pushdownJdbcFilterExprs.isEmpty()) {
+            List<ConnectorExpression> converted = new ArrayList<>();
+            for (org.apache.doris.nereids.trees.expressions.Expression expr : pushdownJdbcFilterExprs) {
+                ConnectorExpression ce = NereidsToConnectorExpressionConverter.convert(expr);
+                if (ce != null) {
+                    converted.add(ce);
+                }
+            }
+            if (!converted.isEmpty()) {
+                return Optional.of(converted.size() == 1
+                        ? converted.get(0) : new ConnectorAnd(converted));
+            }
         }
-        if (pushdownJdbcFilterConjuncts != null && !pushdownJdbcFilterConjuncts.isEmpty()) {
-            allConjuncts.addAll(pushdownJdbcFilterConjuncts);
-        }
-        if (allConjuncts.isEmpty()) {
+
+        // Fall back to conjuncts from filter pushdown (normal JDBC scan path)
+        if (conjuncts == null || conjuncts.isEmpty()) {
             filteredToOriginalIndex = null;
             return Optional.empty();
         }
-        List<Expr> pushableConjuncts = allConjuncts;
+        List<Expr> pushableConjuncts = conjuncts;
         ConnectorMetadata metadata = connector.getMetadata(connectorSession);
         if (!metadata.supportsCastPredicatePushdown(connectorSession)) {
             filteredToOriginalIndex = new ArrayList<>();
             pushableConjuncts = new ArrayList<>();
-            for (int i = 0; i < allConjuncts.size(); i++) {
-                if (!containsCastExpr(allConjuncts.get(i))) {
-                    pushableConjuncts.add(allConjuncts.get(i));
+            for (int i = 0; i < conjuncts.size(); i++) {
+                if (!containsCastExpr(conjuncts.get(i))) {
+                    pushableConjuncts.add(conjuncts.get(i));
                     filteredToOriginalIndex.add(i);
                 }
             }
             // If no filtering occurred, clear the mapping (1:1)
-            if (filteredToOriginalIndex.size() == allConjuncts.size()) {
+            if (filteredToOriginalIndex.size() == conjuncts.size()) {
                 filteredToOriginalIndex = null;
             }
         } else {
