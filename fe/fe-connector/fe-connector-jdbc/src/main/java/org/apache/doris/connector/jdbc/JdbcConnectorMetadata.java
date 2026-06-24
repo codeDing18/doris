@@ -224,12 +224,17 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
     public Optional<AggregateApplicationResult<ConnectorTableHandle>> applyAggregate(
             ConnectorSession session, ConnectorTableHandle handle,
             List<ConnectorAggregate> aggregates) {
+        LOG.info("JDBC_AGG_PUSHDOWN: JdbcConnectorMetadata.applyAggregate handle={}, aggregates={}", handle, aggregates);
         if (!(handle instanceof JdbcTableHandle) || aggregates == null || aggregates.isEmpty()) {
+            LOG.info("JDBC_AGG_PUSHDOWN: applyAggregate rejected: handleType={}, aggregatesEmpty={}",
+                    handle == null ? "null" : handle.getClass().getSimpleName(),
+                    aggregates == null || aggregates.isEmpty());
             return Optional.empty();
         }
         JdbcTableHandle jdbcHandle = (JdbcTableHandle) handle;
-        return Optional.of(new AggregateApplicationResult<>(
-                jdbcHandle.withPushDownAggregates(aggregates)));
+        JdbcTableHandle newHandle = jdbcHandle.withPushDownAggregates(aggregates);
+        LOG.info("JDBC_AGG_PUSHDOWN: applyAggregate produced new handle={}", newHandle);
+        return Optional.of(new AggregateApplicationResult<>(newHandle));
     }
 
     @Override

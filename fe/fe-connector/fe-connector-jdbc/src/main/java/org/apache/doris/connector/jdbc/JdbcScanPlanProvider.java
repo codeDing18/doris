@@ -98,7 +98,10 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
 
             // Build the SQL query with database-specific formatting
             JdbcQueryBuilder queryBuilder = new JdbcQueryBuilder(dbType, functionConfig, sessionProps);
-            if (jdbcHandle.hasPushDownAggregates()) {
+            boolean hasAgg = jdbcHandle.hasPushDownAggregates();
+            LOG.info("JDBC_AGG_PUSHDOWN: planScan for {}.{}, hasPushDownAggregates={}, handle={}",
+                    remoteDbName, remoteTableName, hasAgg, jdbcHandle);
+            if (hasAgg) {
                 querySql = queryBuilder.buildAggregateQuery(
                         remoteDbName, remoteTableName,
                         jdbcHandle.getPushDownAggregates(), filter, limit);
@@ -107,7 +110,8 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
                         remoteDbName, remoteTableName, columns, filter, limit);
             }
 
-            LOG.debug("JDBC scan query for {}.{}: {}", remoteDbName, remoteTableName, querySql);
+            LOG.info("JDBC_AGG_PUSHDOWN: planScan generated query for {}.{}: {}",
+                    remoteDbName, remoteTableName, querySql);
         }
 
         // Build the scan range with all JDBC connection parameters
@@ -183,7 +187,10 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
             JdbcFunctionPushdownConfig functionConfig = JdbcFunctionPushdownConfig.create(
                     dbType, functionRulesJson, extFuncPushdown);
             JdbcQueryBuilder queryBuilder = new JdbcQueryBuilder(dbType, functionConfig, sessionProps);
-            if (jdbcHandle.hasPushDownAggregates()) {
+            boolean hasAgg = jdbcHandle.hasPushDownAggregates();
+            LOG.info("JDBC_AGG_PUSHDOWN: getScanNodeProperties for {}.{}, hasPushDownAggregates={}, handle={}",
+                    jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(), hasAgg, jdbcHandle);
+            if (hasAgg) {
                 querySql = queryBuilder.buildAggregateQuery(
                         jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),
                         jdbcHandle.getPushDownAggregates(), filter, -1);
@@ -192,6 +199,7 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
                         jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),
                         columns, filter, -1);
             }
+            LOG.info("JDBC_AGG_PUSHDOWN: getScanNodeProperties generated query: {}", querySql);
         }
         Map<String, String> props = new HashMap<>();
         props.put("query", querySql);

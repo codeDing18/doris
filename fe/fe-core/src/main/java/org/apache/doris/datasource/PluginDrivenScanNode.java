@@ -400,17 +400,23 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
      */
     private void tryPushDownAggregate() {
         if (pushdownJdbcSimpleAggregates == null || !pushdownJdbcSimpleAggregates.isPresent()) {
+            LOG.info("JDBC_AGG_PUSHDOWN: tryPushDownAggregate - no aggregates to push down");
             return;
         }
+        LOG.info("JDBC_AGG_PUSHDOWN: tryPushDownAggregate - applying {} aggregate(s) {} to handle {}",
+                pushdownJdbcSimpleAggregates.get().size(),
+                pushdownJdbcSimpleAggregates.get(), currentHandle);
         ConnectorMetadata metadata = connector.getMetadata(connectorSession);
         Optional<AggregateApplicationResult<ConnectorTableHandle>> result =
                 metadata.applyAggregate(connectorSession, currentHandle, pushdownJdbcSimpleAggregates.get());
         if (result.isPresent()) {
             currentHandle = result.get().getHandle();
-            LOG.debug("Aggregates pushed down via applyAggregate for plugin-driven scan");
+            LOG.info("JDBC_AGG_PUSHDOWN: aggregates pushed down, updated handle={}", currentHandle);
             // Invalidate cached properties so they are rebuilt with the updated handle.
             scanNodeProperties = null;
             cachedPropertiesResult = null;
+        } else {
+            LOG.info("JDBC_AGG_PUSHDOWN: connector rejected aggregate pushdown (applyAggregate returned empty)");
         }
     }
 
@@ -423,6 +429,13 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
      */
     @Override
     protected void initSchemaParams() throws UserException {
+        boolean hasAggPushdown = pushdownJdbcSimpleAggregates != null && pushdownJdbcSimpleAggregates.isPresent();
+        LOG.info("JDBC_AGG_PUSHDOWN: initSchemaParams start, hasAggPushdown={}, slots={}",
+                hasAggPushdown,
+                desc.getSlots().stream()
+                        .map(s -> "Slot(id=" + s.getId() + ",name=" + s.getColumnName()
+                                + ",colNull=" + (s.getColumn() == null) + ")")
+                        .collect(Collectors.toList()));
         destSlotDescByName = Maps.newHashMap();
         for (SlotDescriptor slot : desc.getSlots()) {
             if (slot.getColumn() != null) {
@@ -453,6 +466,7 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         // remote query reflects the pushed-down aggregates. This must happen before any
         // call to getOrLoadScanNodeProperties()/getSplits() reads currentHandle.
         tryPushDownAggregate();
+        LOG.info("JDBC_AGG_PUSHDOWN: initSchemaParams done, currentHandle={}", currentHandle);
     }
 
     @Override
@@ -485,6 +499,8 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         tryPushDownProjection(columns);
         Optional<ConnectorExpression> remainingFilter = buildRemainingFilter();
 
+        LOG.info("JDBC_AGG_PUSHDOWN: getSplits currentHandle={}, limit={}, columns={}, filter={}",
+                currentHandle, limit, columns, remainingFilter);
         List<ConnectorScanRange> ranges = scanProvider.planScan(
                 connectorSession, currentHandle, columns, remainingFilter, limit);
 

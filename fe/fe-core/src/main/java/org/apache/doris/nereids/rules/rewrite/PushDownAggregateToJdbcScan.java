@@ -78,17 +78,19 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
      */
     private Plan tryPushDown(LogicalAggregate<Plan> aggregate) {
         if (!enableJdbcPushDownAggregate()) {
-            LOG.debug("JDBC_AGG_PUSHDOWN: skip, enable_jdbc_pushdown_aggregate=false");
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, enable_jdbc_pushdown_aggregate=false");
             return null;
         }
         if (!aggregate.getGroupByExpressions().isEmpty()) {
-            LOG.debug("JDBC_AGG_PUSHDOWN: skip, aggregate has GROUP BY");
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, aggregate has GROUP BY");
             return null;
         }
         if (!aggregate.getDistinctArguments().isEmpty()) {
-            LOG.debug("JDBC_AGG_PUSHDOWN: skip, aggregate has DISTINCT arguments");
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, aggregate has DISTINCT arguments");
             return null;
         }
+        LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, child class={}",
+                aggregate.getOutput(), aggregate.child(0).getClass().getSimpleName());
 
         // Unwrap optional LogicalProject to reach the file scan.
         Plan child = aggregate.child(0);
@@ -98,26 +100,26 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
             if (project.child(0) instanceof LogicalFileScan) {
                 child = project.child(0);
             } else {
-                LOG.debug("JDBC_AGG_PUSHDOWN: skip, project child is not LogicalFileScan but {}",
+                LOG.info("JDBC_AGG_PUSHDOWN: skip, project child is not LogicalFileScan but {}",
                         project.child(0).getClass().getSimpleName());
                 return null;
             }
         }
         if (!(child instanceof LogicalFileScan)) {
-            LOG.debug("JDBC_AGG_PUSHDOWN: skip, aggregate child is not LogicalFileScan but {}",
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, aggregate child is not LogicalFileScan but {}",
                     aggregate.child(0).getClass().getSimpleName());
             return null;
         }
         LogicalFileScan fileScan = (LogicalFileScan) child;
         if (!isJdbcCatalog(fileScan)) {
-            LOG.debug("JDBC_AGG_PUSHDOWN: skip, not a supported JDBC catalog (table={})",
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, not a supported JDBC catalog (table={})",
                     fileScan.getTable() == null ? "null" : fileScan.getTable().getName());
             return null;
         }
 
         Plan result = pushdownAggregate(aggregate, project, fileScan);
         if (result == null) {
-            LOG.debug("JDBC_AGG_PUSHDOWN: skip, some aggregate function or argument is unsupported");
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, some aggregate function or argument is unsupported");
         } else {
             LOG.info("JDBC_AGG_PUSHDOWN: pushed down aggregates to JDBC scan for table {}",
                     fileScan.getTable() == null ? "null" : fileScan.getTable().getName());
@@ -134,19 +136,28 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
     @VisibleForTesting
     protected boolean isJdbcCatalog(LogicalFileScan fileScan) {
         if (!(fileScan.getTable() instanceof PluginDrivenExternalTable)) {
+            LOG.info("JDBC_AGG_PUSHDOWN: table is not PluginDrivenExternalTable but {}",
+                    fileScan.getTable() == null ? "null" : fileScan.getTable().getClass().getSimpleName());
             return false;
         }
         PluginDrivenExternalTable table = (PluginDrivenExternalTable) fileScan.getTable();
         if (!(table.getCatalog() instanceof PluginDrivenExternalCatalog)) {
+            LOG.info("JDBC_AGG_PUSHDOWN: catalog is not PluginDrivenExternalCatalog but {}",
+                    table.getCatalog() == null ? "null" : table.getCatalog().getClass().getSimpleName());
             return false;
         }
         PluginDrivenExternalCatalog catalog = (PluginDrivenExternalCatalog) table.getCatalog();
         if (!"jdbc".equalsIgnoreCase(catalog.getType())) {
+            LOG.info("JDBC_AGG_PUSHDOWN: catalog type is '{}', not 'jdbc'", catalog.getType());
             return false;
         }
         String jdbcUrl = catalog.getCatalogProperty().getOrDefault("jdbc_url", "");
         // Currently only MySQL is supported; extend to other JDBC types later.
-        return jdbcUrl.toLowerCase().startsWith("jdbc:mysql:");
+        boolean isMysql = jdbcUrl.toLowerCase().startsWith("jdbc:mysql:");
+        if (!isMysql) {
+            LOG.info("JDBC_AGG_PUSHDOWN: jdbc_url '{}' does not start with 'jdbc:mysql:'", jdbcUrl);
+        }
+        return isMysql;
     }
 
     /**
@@ -180,13 +191,13 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
         for (NamedExpression outputExpr : aggregate.getOutputExpressions()) {
             Set<AggregateFunction> funcs = outputExpr.collect(AggregateFunction.class::isInstance);
             if (funcs.size() != 1) {
-                LOG.debug("JDBC_AGG_PUSHDOWN: output expression '{}' has {} aggregate functions (need exactly 1)",
+                LOG.info("JDBC_AGG_PUSHDOWN: output expression '{}' has {} aggregate functions (need exactly 1)",
                         outputExpr, funcs.size());
                 return null;
             }
             AggregateFunction aggFunc = funcs.iterator().next();
             if (!isSupported(aggFunc)) {
-                LOG.debug("JDBC_AGG_PUSHDOWN: aggregate function '{}' is not supported for pushdown", aggFunc);
+                LOG.info("JDBC_AGG_PUSHDOWN: aggregate function '{}' is not supported for pushdown", aggFunc);
                 return null;
             }
             aggregateFunctions.add(aggFunc);
@@ -210,7 +221,7 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
                 SlotReference slot = (SlotReference) arg;
                 String realColumnName = resolveColumnName(slot, project);
                 if (realColumnName == null) {
-                    LOG.debug("JDBC_AGG_PUSHDOWN: cannot resolve column name for slot '{}' (complex expression)",
+                    LOG.info("JDBC_AGG_PUSHDOWN: cannot resolve column name for slot '{}' (complex expression)",
                             slot.getName());
                     return null;
                 }
@@ -232,13 +243,18 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
                         sqlFunctionName = "MAX";
                         break;
                     default:
+                        LOG.info("JDBC_AGG_PUSHDOWN: function '{}' is not supported", functionName);
                         return null;
                 }
             }
 
             String alias = aggOutputSlots.get(index).getName();
             aggregates.add(new ConnectorAggregate(sqlFunctionName, columnName, alias, distinct));
+            LOG.info("JDBC_AGG_PUSHDOWN: built ConnectorAggregate: {}({}{}) AS {}",
+                    sqlFunctionName, distinct ? "DISTINCT " : "", columnName, alias);
         }
+
+        LOG.info("JDBC_AGG_PUSHDOWN: built {} aggregate(s), rewriting plan", aggregates.size());
 
         // Build new scan: output = aggregate output (reuse slots so upper operators
         // like having/order/limit keep their slot references valid), and attach the
