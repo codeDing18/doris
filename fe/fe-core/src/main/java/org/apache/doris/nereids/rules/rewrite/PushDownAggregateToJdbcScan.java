@@ -164,13 +164,10 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
     }
 
     /**
-     * Pushes down aggregates with a filter: returns filter(rewrittenScan) so the
-     * filter's conjuncts are applied as the JDBC WHERE clause during scan-node
-     * finalization.
-     *
-     * <p>The scan's output must include the original file-scan columns (so the filter's
-     * conjuncts have valid input slots) in addition to the aggregate-result columns.
-     * The original columns are dropped by later column-pruning.
+     * Pushes down aggregates with a filter: stores the filter's conjuncts in the scan
+     * and eliminates the filter node. The conjuncts are converted to a JDBC WHERE
+     * clause during scan-node finalization. The scan's output only contains the
+     * aggregate-result columns (the original filter columns are not needed).
      */
     private Plan pushdownAggregateWithFilter(LogicalAggregate<? extends Plan> aggregate,
             LogicalFilter<? extends Plan> filter, LogicalProject<? extends Plan> project,
@@ -180,21 +177,16 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, some aggregate function or argument is unsupported");
             return null;
         }
-        // The rewritten scan only outputs aggregate-result slots, but the filter's
-        // conjuncts reference the original file-scan columns. Merge the original
-        // columns into the scan output so the filter's input slots are valid.
-        List<Slot> mergedOutput = new ArrayList<>(fileScan.getOutput());
-        for (Slot aggSlot : rewrittenScan.getOutput()) {
-            if (!mergedOutput.contains(aggSlot)) {
-                mergedOutput.add(aggSlot);
-            }
-        }
-        LogicalFileScan scanWithMergedOutput = (LogicalFileScan)
-                ((LogicalFileScan) rewrittenScan).withCachedOutput(mergedOutput);
+        // Store the filter's conjuncts in the scan so they become the JDBC WHERE clause.
+        // The filter node is eliminated because its input slots (original columns) are
+        // not in the aggregate output.
+        List<Expression> filterConjuncts = new ArrayList<>(filter.getConjuncts());
+        LogicalFileScan scanWithFilter = ((LogicalFileScan) rewrittenScan)
+                .withPushdownJdbcFilter(filterConjuncts);
 
-        LOG.info("JDBC_AGG_PUSHDOWN: pushed down aggregates to JDBC scan for table {} with filter",
-                fileScan.getTable() == null ? "null" : fileScan.getTable().getName());
-        return filter.withConjunctsAndChild(filter.getConjuncts(), scanWithMergedOutput);
+        LOG.info("JDBC_AGG_PUSHDOWN: pushed down aggregates to JDBC scan for table {} with filter conjuncts={}",
+                fileScan.getTable() == null ? "null" : fileScan.getTable().getName(), filterConjuncts);
+        return scanWithFilter;
     }
 
     @VisibleForTesting

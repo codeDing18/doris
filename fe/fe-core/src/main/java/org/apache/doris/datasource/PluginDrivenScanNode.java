@@ -59,6 +59,7 @@ import org.apache.doris.thrift.TTableFormatFileDesc;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
 
 import java.util.ArrayList;
@@ -112,6 +113,9 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
     // Pushdown JDBC simple aggregates (SUM/COUNT/AVG/MIN/MAX), applied to the handle in getSplits().
     private final Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates;
 
+    // Pushdown JDBC filter conjuncts (legacy Expr), applied as JDBC WHERE clause in getSplits().
+    private final List<Expr> pushdownJdbcFilterConjuncts;
+
     // Populated from ConnectorScanPlanProvider.getScanNodePropertiesResult()
     private ScanNodePropertiesResult cachedPropertiesResult;
     private Map<String, String> scanNodeProperties;
@@ -131,11 +135,22 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
             ScanContext scanContext, Connector connector,
             ConnectorSession connectorSession, ConnectorTableHandle tableHandle,
             Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
+        this(id, desc, needCheckColumnPriv, sv, scanContext, connector, connectorSession,
+                tableHandle, pushdownJdbcSimpleAggregates, ImmutableList.of());
+    }
+
+    public PluginDrivenScanNode(PlanNodeId id, TupleDescriptor desc,
+            boolean needCheckColumnPriv, SessionVariable sv,
+            ScanContext scanContext, Connector connector,
+            ConnectorSession connectorSession, ConnectorTableHandle tableHandle,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates,
+            List<Expr> pushdownJdbcFilterConjuncts) {
         super(id, desc, "PluginDrivenScanNode", scanContext, needCheckColumnPriv, sv);
         this.connector = connector;
         this.connectorSession = connectorSession;
         this.currentHandle = tableHandle;
         this.pushdownJdbcSimpleAggregates = pushdownJdbcSimpleAggregates;
+        this.pushdownJdbcFilterConjuncts = pushdownJdbcFilterConjuncts;
     }
 
     /**
@@ -166,6 +181,16 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
             ScanContext scanContext, PluginDrivenExternalCatalog catalog,
             PluginDrivenExternalTable table,
             Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
+        return create(id, desc, needCheckColumnPriv, sv, scanContext, catalog, table,
+                pushdownJdbcSimpleAggregates, ImmutableList.of());
+    }
+
+    public static PluginDrivenScanNode create(PlanNodeId id, TupleDescriptor desc,
+            boolean needCheckColumnPriv, SessionVariable sv,
+            ScanContext scanContext, PluginDrivenExternalCatalog catalog,
+            PluginDrivenExternalTable table,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates,
+            List<Expr> pushdownJdbcFilterConjuncts) {
         Connector connector = catalog.getConnector();
         ConnectorSession session = catalog.buildConnectorSession();
         ConnectorMetadata metadata = connector.getMetadata(session);
@@ -175,7 +200,8 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
                 .orElseThrow(() -> new RuntimeException(
                         "Table handle not found for plugin-driven table: " + dbName + "." + tableName));
         return new PluginDrivenScanNode(id, desc, needCheckColumnPriv, sv,
-                scanContext, connector, session, handle, pushdownJdbcSimpleAggregates);
+                scanContext, connector, session, handle, pushdownJdbcSimpleAggregates,
+                pushdownJdbcFilterConjuncts);
     }
 
     @Override
@@ -716,23 +742,32 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
      * Filters out CAST-containing predicates when the connector does not support CAST pushdown.
      */
     private Optional<ConnectorExpression> buildRemainingFilter() {
-        if (conjuncts == null || conjuncts.isEmpty()) {
+        // Merge conjuncts from filter pushdown with pushdown JDBC filter conjuncts
+        // (the latter come from aggregate-pushdown where the filter node is eliminated).
+        List<Expr> allConjuncts = new ArrayList<>();
+        if (conjuncts != null) {
+            allConjuncts.addAll(conjuncts);
+        }
+        if (pushdownJdbcFilterConjuncts != null && !pushdownJdbcFilterConjuncts.isEmpty()) {
+            allConjuncts.addAll(pushdownJdbcFilterConjuncts);
+        }
+        if (allConjuncts.isEmpty()) {
             filteredToOriginalIndex = null;
             return Optional.empty();
         }
-        List<Expr> pushableConjuncts = conjuncts;
+        List<Expr> pushableConjuncts = allConjuncts;
         ConnectorMetadata metadata = connector.getMetadata(connectorSession);
         if (!metadata.supportsCastPredicatePushdown(connectorSession)) {
             filteredToOriginalIndex = new ArrayList<>();
             pushableConjuncts = new ArrayList<>();
-            for (int i = 0; i < conjuncts.size(); i++) {
-                if (!containsCastExpr(conjuncts.get(i))) {
-                    pushableConjuncts.add(conjuncts.get(i));
+            for (int i = 0; i < allConjuncts.size(); i++) {
+                if (!containsCastExpr(allConjuncts.get(i))) {
+                    pushableConjuncts.add(allConjuncts.get(i));
                     filteredToOriginalIndex.add(i);
                 }
             }
             // If no filtering occurred, clear the mapping (1:1)
-            if (filteredToOriginalIndex.size() == conjuncts.size()) {
+            if (filteredToOriginalIndex.size() == allConjuncts.size()) {
                 filteredToOriginalIndex = null;
             }
         } else {

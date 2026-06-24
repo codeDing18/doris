@@ -786,10 +786,18 @@ public class PhysicalPlanTranslator extends DefaultPlanVisitor<PlanFragment, Pla
                     table.getName(), fileScan.getPushdownJdbcSimpleAggregates().isPresent(),
                     slots.stream().map(s -> s.getName() + "(exprId=" + s.getExprId() + ")")
                             .collect(Collectors.toList()));
+            // Translate pushdown JDBC filter conjuncts from Nereids Expression to legacy Expr
+            List<Expr> filterConjuncts = new ArrayList<>();
+            if (fileScan.getPushdownJdbcFilter().isPresent()) {
+                for (org.apache.doris.nereids.trees.expressions.Expression expr :
+                        fileScan.getPushdownJdbcFilter().get()) {
+                    filterConjuncts.add(ExpressionTranslator.translate(expr, context));
+                }
+            }
             scanNode = PluginDrivenScanNode.create(context.nextPlanNodeId(), tupleDescriptor,
                     false, sv, context.getScanContext(), pluginCatalog,
                     ((PluginDrivenExternalTable) table),
-                    fileScan.getPushdownJdbcSimpleAggregates());
+                    fileScan.getPushdownJdbcSimpleAggregates(), filterConjuncts);
         } else {
             throw new RuntimeException("do not support table type " + table.getType());
         }
