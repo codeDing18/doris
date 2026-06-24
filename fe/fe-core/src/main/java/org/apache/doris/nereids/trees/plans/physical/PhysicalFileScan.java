@@ -138,6 +138,21 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
             Statistics statistics, SelectedPartitions selectedPartitions,
             Optional<TableSample> tableSample, Optional<TableSnapshot> tableSnapshot,
             Collection<Slot> operativeSlots, Optional<TableScanParams> scanParams) {
+        this(id, type, table, qualifier, distributionSpec, groupExpression,
+                logicalProperties, physicalProperties, statistics, selectedPartitions, tableSample, tableSnapshot,
+                operativeSlots, scanParams, Optional.empty());
+    }
+
+    /**
+     * Full constructor with physicalProperties, statistics, and pushdown JDBC simple aggregates.
+     */
+    protected PhysicalFileScan(RelationId id, PlanType type, ExternalTable table, List<String> qualifier,
+            DistributionSpec distributionSpec, Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties, PhysicalProperties physicalProperties,
+            Statistics statistics, SelectedPartitions selectedPartitions,
+            Optional<TableSample> tableSample, Optional<TableSnapshot> tableSnapshot,
+            Collection<Slot> operativeSlots, Optional<TableScanParams> scanParams,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
         super(id, type, table, qualifier, groupExpression, logicalProperties,
                 physicalProperties, statistics, operativeSlots);
         this.distributionSpec = distributionSpec;
@@ -145,7 +160,7 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
         this.tableSample = tableSample;
         this.tableSnapshot = tableSnapshot;
         this.scanParams = scanParams;
-        this.pushdownJdbcSimpleAggregates = Optional.empty();
+        this.pushdownJdbcSimpleAggregates = pushdownJdbcSimpleAggregates;
     }
 
     public DistributionSpec getDistributionSpec() {
@@ -225,7 +240,8 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
                                                        Statistics statistics) {
         return AbstractPlan.copyWithSameId(this, () -> new PhysicalFileScan(relationId, getTable(), qualifier,
                 distributionSpec, groupExpression, getLogicalProperties(), physicalProperties, statistics,
-                selectedPartitions, tableSample, tableSnapshot, operativeSlots, scanParams));
+                selectedPartitions, tableSample, tableSnapshot, operativeSlots, scanParams,
+                pushdownJdbcSimpleAggregates));
     }
 
     @Override
