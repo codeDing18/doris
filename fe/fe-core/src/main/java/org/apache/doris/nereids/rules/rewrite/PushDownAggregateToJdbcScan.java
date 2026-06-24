@@ -79,13 +79,13 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
     public Rule build() {
         return logicalAggregate(
                 // Shape 1: aggregate(scan)
-                logicalFileScan().when(this::isMysqlJdbcScan),
+                logicalFileScan().when(this::isJdbcCatalog),
                 // Shape 2: aggregate(project(scan))
-                logicalProject(logicalFileScan().when(this::isMysqlJdbcScan)),
+                logicalProject(logicalFileScan().when(this::isJdbcCatalog)),
                 // Shape 3: aggregate(filter(scan))
-                logicalFilter(logicalFileScan().when(this::isMysqlJdbcScan)),
+                logicalFilter(logicalFileScan().when(this::isJdbcCatalog)),
                 // Shape 4: aggregate(filter(project(scan)))
-                logicalFilter(logicalProject(logicalFileScan().when(this::isMysqlJdbcScan))))
+                logicalFilter(logicalProject(logicalFileScan().when(this::isJdbcCatalog))))
                 .then(this::tryPushDown)
                 .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN);
     }
@@ -159,7 +159,7 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
     }
 
     @VisibleForTesting
-    protected boolean isMysqlJdbcScan(LogicalFileScan fileScan) {
+    protected boolean isJdbcCatalog(LogicalFileScan fileScan) {
         if (!(fileScan.getTable() instanceof PluginDrivenExternalTable)) {
             LOG.info("JDBC_AGG_PUSHDOWN: table is not PluginDrivenExternalTable but {}",
                     fileScan.getTable() == null ? "null" : fileScan.getTable().getClass().getSimpleName());
