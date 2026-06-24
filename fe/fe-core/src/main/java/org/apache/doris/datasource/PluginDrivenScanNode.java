@@ -464,6 +464,27 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         LOG.info("JDBC_AGG_PUSHDOWN: initSchemaParams done, currentHandle={}", currentHandle);
     }
 
+    /**
+     * Overrides {@link FileQueryScanNode#doFinalize()} to skip
+     * {@code updateRequiredSlots()}, which calls the private
+     * {@code setColumnPositionMapping()}. That method maps each file slot to a
+     * position in the table schema, but JDBC scans read via SQL query (not file
+     * column positions), and aggregate-pushdown virtual columns are not in the
+     * table schema — so it would throw "Column X not found in table".
+     */
+    @Override
+    protected void doFinalize() throws UserException {
+        org.apache.doris.qe.ConnectContext ctx = org.apache.doris.qe.ConnectContext.get();
+        if (ctx.getExecutor() != null) {
+            ctx.getExecutor().getSummaryProfile().setFinalizeScanNodeStartTime();
+        }
+        convertPredicate();
+        createScanRangeLocations();
+        if (ctx.getExecutor() != null) {
+            ctx.getExecutor().getSummaryProfile().setFinalizeScanNodeFinishTime();
+        }
+    }
+
     @Override
     public List<Split> getSplits(int numBackends) throws UserException {
         // Attempt limit and projection pushdown via SPI protocol
