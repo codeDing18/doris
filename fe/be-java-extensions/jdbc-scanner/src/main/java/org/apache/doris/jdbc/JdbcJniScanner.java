@@ -179,13 +179,15 @@ public class JdbcJniScanner extends JniScanner {
             // the wrong type handler.
             columnIndexMapping = new int[fields.length];
             int rsColumnCount = resultSetMetaData.getColumnCount();
+            LOG.info("JdbcJniScanner: rsColumnCount is: " + rsColumnCount);
             Map<String, Integer> rsColumnMap = new HashMap<>(rsColumnCount);
             for (int i = 1; i <= rsColumnCount; i++) {
-                String colLabel = resultSetMetaData.getColumnLabel(i);
-                String colName = resultSetMetaData.getColumnName(i);
-                LOG.info("JdbcJniScanner: ResultSet column " + i + ": label='" + colLabel
-                        + "', name='" + colName + "', lowerLabel='" + colLabel.toLowerCase() + "'");
-                rsColumnMap.put(colLabel.toLowerCase(), i);
+                String colName = resultSetMetaData.getColumnLabel(i).toLowerCase();
+                LOG.info("JdbcJniScanner: ResultSet column " + i
+                        + ": label='" + resultSetMetaData.getColumnLabel(i)
+                        + "', name='" + resultSetMetaData.getColumnName(i)
+                        + "', lowerLabel='" + colName + "'");
+                rsColumnMap.put(colName, i);
             }
             for (int i = 0; i < fields.length; i++) {
                 String fieldName = fields[i].toLowerCase();
