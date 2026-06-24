@@ -92,8 +92,8 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
                 logicalAggregate(logicalFilter(logicalFileScan().when(this::isJdbcCatalog)))
                         .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
                         .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
-                // Shape 4: aggregate(filter(project(scan)))
-                logicalAggregate(logicalFilter(logicalProject(logicalFileScan().when(this::isJdbcCatalog))))
+                // Shape 4: aggregate(project(filter(scan)))
+                logicalAggregate(logicalProject(logicalFilter(logicalFileScan().when(this::isJdbcCatalog))))
                         .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
                         .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN));
     }
@@ -104,6 +104,8 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
      * scan is not on a JDBC catalog.
      */
     private Plan tryPushDown(LogicalAggregate<? extends Plan> aggregate) {
+        LOG.info("JDBC_AGG_PUSHDOWN: tryPushDown called, output={}, childClass={}",
+                aggregate.getOutput(), aggregate.child(0).getClass().getSimpleName());
         if (!enableJdbcPushDownAggregate()) {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, enable_jdbc_pushdown_aggregate=false");
             return null;
