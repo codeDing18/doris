@@ -1144,15 +1144,6 @@ Status FileScanner::_get_next_reader() {
                 std::map<std::string, std::string> jdbc_params(
                         range.table_format_params.jdbc_params.begin(),
                         range.table_format_params.jdbc_params.end());
-                auto it = jdbc_params.find("query_sql");
-                LOG(INFO) << "JDBC_AGG_PUSHDOWN: BE file_scanner jdbc branch, query_sql="
-                          << (it != jdbc_params.end() ? it->second : "<MISSING>")
-                          << ", num_slots=" << _file_slot_descs.size();
-                for (size_t i = 0; i < _file_slot_descs.size(); ++i) {
-                    LOG(INFO) << "JDBC_AGG_PUSHDOWN: BE slot[" << i
-                              << "] col_name='" << _file_slot_descs[i]->col_name()
-                              << "', type=" << _file_slot_descs[i]->type()->debug_string();
-                }
                 auto jdbc_reader = JdbcJniReader::create_unique(_file_slot_descs, _state, _profile,
                                                                 jdbc_params);
                 init_status = static_cast<GenericReader*>(jdbc_reader.get())->init_reader(&jni_ctx);
