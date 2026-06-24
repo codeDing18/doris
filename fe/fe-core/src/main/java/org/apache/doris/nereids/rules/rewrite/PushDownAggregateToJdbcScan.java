@@ -23,6 +23,7 @@ import org.apache.doris.datasource.PluginDrivenExternalCatalog;
 import org.apache.doris.datasource.PluginDrivenExternalTable;
 import org.apache.doris.nereids.rules.Rule;
 import org.apache.doris.nereids.rules.RuleType;
+import org.apache.doris.nereids.rules.rewrite.RewriteRuleFactory;
 import org.apache.doris.nereids.trees.expressions.Alias;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.NamedExpression;
@@ -45,6 +46,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableList;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -71,23 +73,29 @@ import java.util.Set;
  *
  * <p>Conservatively bails out if any function or argument is unsupported.
  */
-public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
+public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
 
     private static final Logger LOG = LogManager.getLogger(PushDownAggregateToJdbcScan.class);
 
     @Override
-    public Rule build() {
-        return logicalAggregate(
+    public List<Rule> buildRules() {
+        return ImmutableList.of(
                 // Shape 1: aggregate(scan)
-                logicalFileScan().when(this::isJdbcCatalog),
+                logicalAggregate(logicalFileScan().when(this::isJdbcCatalog))
+                        .then(this::tryPushDown)
+                        .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
                 // Shape 2: aggregate(project(scan))
-                logicalProject(logicalFileScan().when(this::isJdbcCatalog)),
+                logicalAggregate(logicalProject(logicalFileScan().when(this::isJdbcCatalog)))
+                        .then(this::tryPushDown)
+                        .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
                 // Shape 3: aggregate(filter(scan))
-                logicalFilter(logicalFileScan().when(this::isJdbcCatalog)),
+                logicalAggregate(logicalFilter(logicalFileScan().when(this::isJdbcCatalog)))
+                        .then(this::tryPushDown)
+                        .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
                 // Shape 4: aggregate(filter(project(scan)))
-                logicalFilter(logicalProject(logicalFileScan().when(this::isJdbcCatalog))))
-                .then(this::tryPushDown)
-                .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN);
+                logicalAggregate(logicalFilter(logicalProject(logicalFileScan().when(this::isJdbcCatalog))))
+                        .then(this::tryPushDown)
+                        .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN));
     }
 
     /**
@@ -183,6 +191,24 @@ public class PushDownAggregateToJdbcScan extends OneRewriteRuleFactory {
             LOG.info("JDBC_AGG_PUSHDOWN: jdbc_url '{}' does not start with 'jdbc:mysql:'", jdbcUrl);
         }
         return isMysql;
+    }
+
+    /**
+     * Returns true if the aggregate function is supported for pushdown:
+     * SUM/COUNT/AVG/MIN/MAX with a single SlotReference argument, or COUNT(*).
+     */
+    private boolean isSupported(AggregateFunction func) {
+        if (func instanceof Sum || func instanceof Avg || func instanceof Min || func instanceof Max) {
+            return func.arity() == 1 && func.child(0) instanceof SlotReference;
+        }
+        if (func instanceof Count) {
+            Count count = (Count) func;
+            if (count.isCountStar()) {
+                return true;
+            }
+            return count.arity() == 1 && count.child(0) instanceof SlotReference;
+        }
+        return false;
     }
 
     /**
