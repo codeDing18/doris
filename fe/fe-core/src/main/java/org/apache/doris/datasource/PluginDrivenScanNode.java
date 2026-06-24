@@ -471,11 +471,15 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
 
     @Override
     protected TColumnCategory classifyColumn(SlotDescriptor slot, List<String> partitionKeys) {
-        // Aggregate-output slots have no physical column; treat them as SYNTHESIZED so
-        // they are not treated as file slots (avoids column-position lookups that
-        // assume a real column exists).
+        boolean hasAggPushdown = pushdownJdbcSimpleAggregates != null
+                && pushdownJdbcSimpleAggregates.isPresent();
+        // When simple aggregates are pushed down, the aggregate-output slots have no
+        // physical column, but their values come from the JDBC query result columns.
+        // They MUST be treated as REGULAR file slots so that BE includes them in
+        // required_fields (the column list read from the JDBC ResultSet). Without this,
+        // BE reads 0 columns and returns empty data even though MySQL returns a row.
         if (slot.getColumn() == null) {
-            return TColumnCategory.SYNTHESIZED;
+            return hasAggPushdown ? TColumnCategory.REGULAR : TColumnCategory.SYNTHESIZED;
         }
         if (partitionKeys.contains(slot.getColumn().getName())) {
             return TColumnCategory.PARTITION_KEY;
