@@ -449,6 +449,10 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         // reads via JdbcScanRange, not TFileScanRangeParams column mapping).
         params.setEnableMappingVarbinary(getEnableMappingVarbinary());
         params.setEnableMappingTimestampTz(getEnableMappingTimestampTz());
+        // Apply aggregate pushdown early (before EXPLAIN/getSplits generate SQL), so the
+        // remote query reflects the pushed-down aggregates. This must happen before any
+        // call to getOrLoadScanNodeProperties()/getSplits() reads currentHandle.
+        tryPushDownAggregate();
     }
 
     @Override
@@ -468,9 +472,8 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
     @Override
     public List<Split> getSplits(int numBackends) throws UserException {
         // Attempt limit and projection pushdown via SPI protocol
+        // (aggregate pushdown is applied earlier in initSchemaParams)
         tryPushDownLimit();
-        // Attempt aggregate pushdown via SPI protocol
-        tryPushDownAggregate();
 
         ConnectorScanPlanProvider scanProvider = connector.getScanPlanProvider();
         if (scanProvider == null) {
