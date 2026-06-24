@@ -31,6 +31,7 @@ import org.apache.doris.nereids.memo.GroupExpression;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.trees.TableSample;
 import org.apache.doris.nereids.trees.expressions.ExprId;
+import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.NamedExpression;
 import org.apache.doris.nereids.trees.expressions.Slot;
 import org.apache.doris.nereids.trees.expressions.SlotReference;
@@ -67,6 +68,9 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
     protected final Optional<List<Slot>> cachedOutputs;
     // Pushdown JDBC simple aggregates (SUM/COUNT/AVG/MIN/MAX) for plugin-driven JDBC catalogs.
     protected final Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates;
+    // Pushdown JDBC filter conjuncts (Nereids Expression) for plugin-driven JDBC catalogs.
+    // Used together with pushdownJdbcSimpleAggregates to push WHERE clause to remote JDBC query.
+    protected final Optional<List<Expression>> pushdownJdbcFilter;
 
     /**
      * Constructor for LogicalFileScan.
@@ -106,6 +110,22 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
             Optional<GroupExpression> groupExpression, Optional<LogicalProperties> logicalProperties,
             String tableAlias, Optional<List<Slot>> cachedSlots,
             Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
+        this(id, table, qualifier, selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
+                scanParams, groupExpression, logicalProperties, tableAlias, cachedSlots,
+                pushdownJdbcSimpleAggregates, Optional.empty());
+    }
+
+    /**
+     * Full constructor for LogicalFileScan with all fields including pushdown JDBC simple aggregates and filter.
+     */
+    protected LogicalFileScan(RelationId id, ExternalTable table, List<String> qualifier,
+            SelectedPartitions selectedPartitions, Collection<Slot> operativeSlots,
+            List<NamedExpression> virtualColumns, Optional<TableSample> tableSample,
+            Optional<TableSnapshot> tableSnapshot, Optional<TableScanParams> scanParams,
+            Optional<GroupExpression> groupExpression, Optional<LogicalProperties> logicalProperties,
+            String tableAlias, Optional<List<Slot>> cachedSlots,
+            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates,
+            Optional<List<Expression>> pushdownJdbcFilter) {
         super(id, PlanType.LOGICAL_FILE_SCAN, table, qualifier, operativeSlots, virtualColumns,
                 groupExpression, logicalProperties, tableAlias);
         this.selectedPartitions = selectedPartitions;
@@ -114,6 +134,7 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
         this.scanParams = scanParams;
         this.cachedOutputs = cachedSlots;
         this.pushdownJdbcSimpleAggregates = pushdownJdbcSimpleAggregates;
+        this.pushdownJdbcFilter = pushdownJdbcFilter;
     }
 
     protected LogicalFileScan(RelationId id, ExternalTable table, List<String> qualifier,
@@ -150,6 +171,10 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
         return pushdownJdbcSimpleAggregates;
     }
 
+    public Optional<List<Expression>> getPushdownJdbcFilter() {
+        return pushdownJdbcFilter;
+    }
+
     @Override
     public ExternalTable getTable() {
         Preconditions.checkArgument(table instanceof ExternalTable,
@@ -173,7 +198,7 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
                 new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
                 selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
                 scanParams, groupExpression, Optional.of(getLogicalProperties()), tableAlias,
-                cachedOutputs, pushdownJdbcSimpleAggregates));
+                cachedOutputs, pushdownJdbcSimpleAggregates, pushdownJdbcFilter));
     }
 
     @Override
@@ -183,7 +208,7 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
                 new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
                 selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
                 scanParams, groupExpression, logicalProperties, tableAlias,
-                cachedOutputs, pushdownJdbcSimpleAggregates));
+                cachedOutputs, pushdownJdbcSimpleAggregates, pushdownJdbcFilter));
     }
 
     public LogicalFileScan withSelectedPartitions(SelectedPartitions selectedPartitions) {
@@ -191,7 +216,7 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
                 new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
                 selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
                 scanParams, Optional.empty(), Optional.of(getLogicalProperties()), tableAlias,
-                cachedOutputs, pushdownJdbcSimpleAggregates));
+                cachedOutputs, pushdownJdbcSimpleAggregates, pushdownJdbcFilter));
     }
 
     @Override
@@ -200,7 +225,7 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
                 new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
                 selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
                 scanParams, Optional.empty(), Optional.empty(), tableAlias,
-                cachedOutputs, pushdownJdbcSimpleAggregates));
+                cachedOutputs, pushdownJdbcSimpleAggregates, pushdownJdbcFilter));
     }
 
     public LogicalFileScan withTableAlias(String tableAlias) {
@@ -208,7 +233,7 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
                 new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
                 selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
                 scanParams, Optional.empty(), Optional.of(getLogicalProperties()), tableAlias,
-                cachedOutputs, pushdownJdbcSimpleAggregates));
+                cachedOutputs, pushdownJdbcSimpleAggregates, pushdownJdbcFilter));
     }
 
     @Override
@@ -221,7 +246,8 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
         return super.equals(o)
                 && Objects.equals(selectedPartitions, ((LogicalFileScan) o).selectedPartitions)
                 && Objects.equals(pushdownJdbcSimpleAggregates,
-                        ((LogicalFileScan) o).pushdownJdbcSimpleAggregates);
+                        ((LogicalFileScan) o).pushdownJdbcSimpleAggregates)
+                && Objects.equals(pushdownJdbcFilter, ((LogicalFileScan) o).pushdownJdbcFilter);
     }
 
     @Override
@@ -362,7 +388,7 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
                 new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
                 selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
                 scanParams, groupExpression, Optional.of(getLogicalProperties()), tableAlias, cachedOutputs,
-                pushdownJdbcSimpleAggregates));
+                pushdownJdbcSimpleAggregates, pushdownJdbcFilter));
     }
 
     public LogicalFileScan withCachedOutput(List<Slot> cachedOutputs) {
@@ -370,7 +396,7 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
                 new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
                 selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
                 scanParams, groupExpression, Optional.empty(), tableAlias, Optional.of(cachedOutputs),
-                pushdownJdbcSimpleAggregates));
+                pushdownJdbcSimpleAggregates, pushdownJdbcFilter));
     }
 
     /**
@@ -382,7 +408,18 @@ public class LogicalFileScan extends LogicalCatalogRelation implements SupportPr
                 new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
                 selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
                 scanParams, groupExpression, Optional.of(getLogicalProperties()), tableAlias,
-                cachedOutputs, Optional.of(pushdownJdbcSimpleAggregates)));
+                cachedOutputs, Optional.of(pushdownJdbcSimpleAggregates), pushdownJdbcFilter));
+    }
+
+    /**
+     * Returns a new LogicalFileScan with the given pushdown JDBC filter conjuncts.
+     */
+    public LogicalFileScan withPushdownJdbcFilter(List<Expression> pushdownJdbcFilter) {
+        return AbstractPlan.copyWithSameId(this, () ->
+                new LogicalFileScan(relationId, (ExternalTable) table, qualifier,
+                selectedPartitions, operativeSlots, virtualColumns, tableSample, tableSnapshot,
+                scanParams, groupExpression, Optional.of(getLogicalProperties()), tableAlias,
+                cachedOutputs, pushdownJdbcSimpleAggregates, Optional.of(pushdownJdbcFilter)));
     }
 
     @Override
