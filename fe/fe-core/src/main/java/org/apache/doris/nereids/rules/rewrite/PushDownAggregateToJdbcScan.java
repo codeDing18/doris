@@ -229,19 +229,27 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         ConnectorTableHandle handle = metadata.getTableHandle(session, dbName, tableName)
                 .orElse(null);
         if (handle == null) {
+            LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - table handle not found for {}.{}", dbName, tableName);
             return null;
         }
+        LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - fresh handle={}, hasFilter={}", handle, filter != null);
 
         // Apply filter if present (convert Nereids conjuncts to ConnectorFilterConstraint).
         if (filter != null) {
             ConnectorExpression filterExpr = NereidsToConnectorExpression.convertConjuncts(
                     new ArrayList<>(filter.getConjuncts()));
-            if (filterExpr != null) {
+            if (filterExpr == null) {
+                LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - filter conversion failed, conjuncts={}",
+                        filter.getConjuncts());
+            } else {
                 ConnectorFilterConstraint constraint = new ConnectorFilterConstraint(filterExpr);
                 Optional<FilterApplicationResult<ConnectorTableHandle>> result =
                         metadata.applyFilter(session, handle, constraint);
                 if (result.isPresent()) {
                     handle = result.get().getHandle();
+                    LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - applyFilter succeeded, handle={}", handle);
+                } else {
+                    LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - applyFilter rejected by connector");
                 }
             }
         }
@@ -250,9 +258,12 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         Optional<AggregateApplicationResult<ConnectorTableHandle>> result =
                 metadata.applyAggregate(session, handle, aggregates);
         if (!result.isPresent()) {
+            LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - applyAggregate rejected by connector");
             return null;
         }
-        return result.get().getHandle();
+        handle = result.get().getHandle();
+        LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - applyAggregate succeeded, final handle={}", handle);
+        return handle;
     }
 
     @VisibleForTesting
