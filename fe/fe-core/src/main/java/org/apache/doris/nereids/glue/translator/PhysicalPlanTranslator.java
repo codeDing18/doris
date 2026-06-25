@@ -782,18 +782,14 @@ public class PhysicalPlanTranslator extends DefaultPlanVisitor<PlanFragment, Pla
         } else if (table instanceof PluginDrivenExternalTable) {
             PluginDrivenExternalCatalog pluginCatalog =
                     (PluginDrivenExternalCatalog) table.getCatalog();
-            LOG.info("JDBC_AGG_PUSHDOWN: visitPhysicalFileScan for table {}, hasAggPushdown={}, slots={}",
-                    table.getName(), fileScan.getPushdownJdbcSimpleAggregates().isPresent(),
+            LOG.info("JDBC_AGG_PUSHDOWN: visitPhysicalFileScan for table {}, hasPushdownHandle={}, slots={}",
+                    table.getName(), fileScan.getPushdownJdbcHandle().isPresent(),
                     slots.stream().map(s -> s.getName() + "(exprId=" + s.getExprId() + ")")
                             .collect(Collectors.toList()));
-            // Pass pushdown JDBC filter conjuncts (Nereids Expression) directly to the scan node.
-            // The scan node converts them to ConnectorExpression via NereidsToConnectorExpressionConverter.
-            List<org.apache.doris.nereids.trees.expressions.Expression> filterExprs =
-                    fileScan.getPushdownJdbcFilter().orElse(ImmutableList.of());
             scanNode = PluginDrivenScanNode.create(context.nextPlanNodeId(), tupleDescriptor,
                     false, sv, context.getScanContext(), pluginCatalog,
                     ((PluginDrivenExternalTable) table),
-                    fileScan.getPushdownJdbcSimpleAggregates(), filterExprs);
+                    fileScan.getPushdownJdbcHandle());
         } else {
             throw new RuntimeException("do not support table type " + table.getType());
         }

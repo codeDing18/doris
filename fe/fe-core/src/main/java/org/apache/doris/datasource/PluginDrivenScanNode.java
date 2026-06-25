@@ -110,12 +110,6 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
     // Set during filter pushdown; may be updated from the original table handle.
     private ConnectorTableHandle currentHandle;
 
-    // Pushdown JDBC simple aggregates (SUM/COUNT/AVG/MIN/MAX), applied to the handle in getSplits().
-    private final Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates;
-
-    // Pushdown JDBC filter conjuncts (Nereids Expression), applied as JDBC WHERE clause in getSplits().
-    private final List<org.apache.doris.nereids.trees.expressions.Expression> pushdownJdbcFilterExprs;
-
     // Populated from ConnectorScanPlanProvider.getScanNodePropertiesResult()
     private ScanNodePropertiesResult cachedPropertiesResult;
     private Map<String, String> scanNodeProperties;
@@ -126,31 +120,10 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
             boolean needCheckColumnPriv, SessionVariable sv,
             ScanContext scanContext, Connector connector,
             ConnectorSession connectorSession, ConnectorTableHandle tableHandle) {
-        this(id, desc, needCheckColumnPriv, sv, scanContext, connector, connectorSession,
-                tableHandle, Optional.empty());
-    }
-
-    public PluginDrivenScanNode(PlanNodeId id, TupleDescriptor desc,
-            boolean needCheckColumnPriv, SessionVariable sv,
-            ScanContext scanContext, Connector connector,
-            ConnectorSession connectorSession, ConnectorTableHandle tableHandle,
-            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
-        this(id, desc, needCheckColumnPriv, sv, scanContext, connector, connectorSession,
-                tableHandle, pushdownJdbcSimpleAggregates, ImmutableList.of());
-    }
-
-    public PluginDrivenScanNode(PlanNodeId id, TupleDescriptor desc,
-            boolean needCheckColumnPriv, SessionVariable sv,
-            ScanContext scanContext, Connector connector,
-            ConnectorSession connectorSession, ConnectorTableHandle tableHandle,
-            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates,
-            List<org.apache.doris.nereids.trees.expressions.Expression> pushdownJdbcFilterExprs) {
         super(id, desc, "PluginDrivenScanNode", scanContext, needCheckColumnPriv, sv);
         this.connector = connector;
         this.connectorSession = connectorSession;
         this.currentHandle = tableHandle;
-        this.pushdownJdbcSimpleAggregates = pushdownJdbcSimpleAggregates;
-        this.pushdownJdbcFilterExprs = pushdownJdbcFilterExprs;
     }
 
     /**
@@ -161,48 +134,33 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
             boolean needCheckColumnPriv, SessionVariable sv,
             ScanContext scanContext, PluginDrivenExternalCatalog catalog,
             PluginDrivenExternalTable table) {
-        Connector connector = catalog.getConnector();
-        ConnectorSession session = catalog.buildConnectorSession();
-        ConnectorMetadata metadata = connector.getMetadata(session);
-        String dbName = table.getDb() != null ? table.getDb().getRemoteName() : "";
-        String tableName = table.getRemoteName();
-        ConnectorTableHandle handle = metadata.getTableHandle(session, dbName, tableName)
-                .orElseThrow(() -> new RuntimeException(
-                        "Table handle not found for plugin-driven table: " + dbName + "." + tableName));
-        return new PluginDrivenScanNode(id, desc, needCheckColumnPriv, sv,
-                scanContext, connector, session, handle);
+        return create(id, desc, needCheckColumnPriv, sv, scanContext, catalog, table, Optional.empty());
     }
 
     /**
-     * Creates a PluginDrivenScanNode with pushdown JDBC simple aggregates.
+     * Creates a PluginDrivenScanNode with a pre-resolved pushdown JDBC handle (filter +
+     * aggregates already applied via connector SPI in the rewrite rule).
      */
     public static PluginDrivenScanNode create(PlanNodeId id, TupleDescriptor desc,
             boolean needCheckColumnPriv, SessionVariable sv,
             ScanContext scanContext, PluginDrivenExternalCatalog catalog,
             PluginDrivenExternalTable table,
-            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates) {
-        return create(id, desc, needCheckColumnPriv, sv, scanContext, catalog, table,
-                pushdownJdbcSimpleAggregates, ImmutableList.of());
-    }
-
-    public static PluginDrivenScanNode create(PlanNodeId id, TupleDescriptor desc,
-            boolean needCheckColumnPriv, SessionVariable sv,
-            ScanContext scanContext, PluginDrivenExternalCatalog catalog,
-            PluginDrivenExternalTable table,
-            Optional<List<ConnectorAggregate>> pushdownJdbcSimpleAggregates,
-            List<org.apache.doris.nereids.trees.expressions.Expression> pushdownJdbcFilterExprs) {
+            Optional<ConnectorTableHandle> pushdownJdbcHandle) {
         Connector connector = catalog.getConnector();
         ConnectorSession session = catalog.buildConnectorSession();
-        ConnectorMetadata metadata = connector.getMetadata(session);
-        String dbName = table.getDb() != null ? table.getDb().getRemoteName() : "";
-        String tableName = table.getRemoteName();
-        ConnectorTableHandle handle = metadata.getTableHandle(session, dbName, tableName)
-                .orElseThrow(() -> new RuntimeException(
-                        "Table handle not found for plugin-driven table: " + dbName + "." + tableName));
+        ConnectorTableHandle handle = pushdownJdbcHandle.orElseGet(() -> {
+            ConnectorMetadata metadata = connector.getMetadata(session);
+            String dbName = table.getDb() != null ? table.getDb().getRemoteName() : "";
+            String tableName = table.getRemoteName();
+            return metadata.getTableHandle(session, dbName, tableName)
+                    .orElseThrow(() -> new RuntimeException(
+                            "Table handle not found for plugin-driven table: " + dbName + "." + tableName));
+        });
         return new PluginDrivenScanNode(id, desc, needCheckColumnPriv, sv,
-                scanContext, connector, session, handle, pushdownJdbcSimpleAggregates,
-                pushdownJdbcFilterExprs);
+                scanContext, connector, session, handle);
     }
+
+    // ---- Scan node property accessors ----
 
     @Override
     public String getNodeExplainString(String prefix, TExplainLevel detailLevel) {
@@ -421,32 +379,6 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
     }
 
     /**
-     * Attempts to push aggregates down via the SPI applyAggregate() protocol.
-     * Called before getSplits(), after filter/limit/projection pushdown.
-     */
-    private void tryPushDownAggregate() {
-        if (pushdownJdbcSimpleAggregates == null || !pushdownJdbcSimpleAggregates.isPresent()) {
-            LOG.info("JDBC_AGG_PUSHDOWN: tryPushDownAggregate - no aggregates to push down");
-            return;
-        }
-        LOG.info("JDBC_AGG_PUSHDOWN: tryPushDownAggregate - applying {} aggregate(s) {} to handle {}",
-                pushdownJdbcSimpleAggregates.get().size(),
-                pushdownJdbcSimpleAggregates.get(), currentHandle);
-        ConnectorMetadata metadata = connector.getMetadata(connectorSession);
-        Optional<AggregateApplicationResult<ConnectorTableHandle>> result =
-                metadata.applyAggregate(connectorSession, currentHandle, pushdownJdbcSimpleAggregates.get());
-        if (result.isPresent()) {
-            currentHandle = result.get().getHandle();
-            LOG.info("JDBC_AGG_PUSHDOWN: aggregates pushed down, updated handle={}", currentHandle);
-            // Invalidate cached properties so they are rebuilt with the updated handle.
-            scanNodeProperties = null;
-            cachedPropertiesResult = null;
-        } else {
-            LOG.info("JDBC_AGG_PUSHDOWN: connector rejected aggregate pushdown (applyAggregate returned empty)");
-        }
-    }
-
-    /**
      * Overrides {@link FileQueryScanNode#initSchemaParams()} to skip
      * {@code setDefaultValueExprs()} and {@code setColumnPositionMapping()}.
      * JDBC scans read data via the SQL query in the scan range, not via file
@@ -456,9 +388,8 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
      */
     @Override
     protected void initSchemaParams() throws UserException {
-        boolean hasAggPushdown = pushdownJdbcSimpleAggregates != null && pushdownJdbcSimpleAggregates.isPresent();
-        LOG.info("JDBC_AGG_PUSHDOWN: initSchemaParams start, hasAggPushdown={}, slots={}",
-                hasAggPushdown,
+        LOG.info("JDBC_AGG_PUSHDOWN: initSchemaParams, currentHandle={}, slots={}",
+                currentHandle,
                 desc.getSlots().stream()
                         .map(s -> "Slot(id=" + s.getId() + ",label=" + s.getLabel()
                                 + ",colName=" + (s.getColumn() == null ? "null" : s.getColumn().getName()) + ")")
@@ -483,10 +414,8 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
         }
         params.setEnableMappingVarbinary(getEnableMappingVarbinary());
         params.setEnableMappingTimestampTz(getEnableMappingTimestampTz());
-        // Apply aggregate pushdown early (before EXPLAIN/getSplits generate SQL), so the
-        // remote query reflects the pushed-down aggregates. This must happen before any
-        // call to getOrLoadScanNodeProperties()/getSplits() reads currentHandle.
-        tryPushDownAggregate();
+        // The handle already has filter + aggregates applied (in PushDownAggregateToJdbcScan rule),
+        // so no need to apply them here.
         LOG.info("JDBC_AGG_PUSHDOWN: initSchemaParams done, currentHandle={}", currentHandle);
     }
 
@@ -742,23 +671,8 @@ public class PluginDrivenScanNode extends FileQueryScanNode {
      * Filters out CAST-containing predicates when the connector does not support CAST pushdown.
      */
     private Optional<ConnectorExpression> buildRemainingFilter() {
-        // If we have pushdown JDBC filter expressions (from aggregate-pushdown where the
-        // filter node is eliminated), convert them directly to ConnectorExpression.
-        if (pushdownJdbcFilterExprs != null && !pushdownJdbcFilterExprs.isEmpty()) {
-            List<ConnectorExpression> converted = new ArrayList<>();
-            for (org.apache.doris.nereids.trees.expressions.Expression expr : pushdownJdbcFilterExprs) {
-                ConnectorExpression ce = NereidsToConnectorExpressionConverter.convert(expr);
-                if (ce != null) {
-                    converted.add(ce);
-                }
-            }
-            if (!converted.isEmpty()) {
-                return Optional.of(converted.size() == 1
-                        ? converted.get(0) : new ConnectorAnd(converted));
-            }
-        }
-
-        // Fall back to conjuncts from filter pushdown (normal JDBC scan path)
+        // Filter is now stored in the handle (via applyFilter in the rewrite rule),
+        // so we only need to handle conjuncts from normal filter pushdown.
         if (conjuncts == null || conjuncts.isEmpty()) {
             filteredToOriginalIndex = null;
             return Optional.empty();
