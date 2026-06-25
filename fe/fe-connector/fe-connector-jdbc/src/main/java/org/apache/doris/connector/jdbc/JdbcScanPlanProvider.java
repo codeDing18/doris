@@ -99,15 +99,26 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
             // Build the SQL query with database-specific formatting
             JdbcQueryBuilder queryBuilder = new JdbcQueryBuilder(dbType, functionConfig, sessionProps);
             boolean hasAgg = jdbcHandle.hasPushDownAggregates();
+            // Merge handle filter (from aggregate pushdown) with param filter (from scan node conjuncts)
+            Optional<ConnectorExpression> effectiveFilter = filter;
+            if (jdbcHandle.getPushDownFilter().isPresent()) {
+                ConnectorExpression handleFilter = jdbcHandle.getPushDownFilter().get();
+                if (effectiveFilter.isPresent()) {
+                    effectiveFilter = Optional.of(new org.apache.doris.connector.api.pushdown.ConnectorAnd(
+                            java.util.Arrays.asList(handleFilter, effectiveFilter.get())));
+                } else {
+                    effectiveFilter = Optional.of(handleFilter);
+                }
+            }
             LOG.info("JDBC_AGG_PUSHDOWN: planScan for {}.{}, hasPushDownAggregates={}, handle={}",
                     remoteDbName, remoteTableName, hasAgg, jdbcHandle);
             if (hasAgg) {
                 querySql = queryBuilder.buildAggregateQuery(
                         remoteDbName, remoteTableName,
-                        jdbcHandle.getPushDownAggregates(), filter, limit);
+                        jdbcHandle.getPushDownAggregates(), effectiveFilter, limit);
             } else {
                 querySql = queryBuilder.buildQuery(
-                        remoteDbName, remoteTableName, columns, filter, limit);
+                        remoteDbName, remoteTableName, columns, effectiveFilter, limit);
             }
 
             LOG.info("JDBC_AGG_PUSHDOWN: planScan generated query for {}.{}: {}",
@@ -188,16 +199,27 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
                     dbType, functionRulesJson, extFuncPushdown);
             JdbcQueryBuilder queryBuilder = new JdbcQueryBuilder(dbType, functionConfig, sessionProps);
             boolean hasAgg = jdbcHandle.hasPushDownAggregates();
+            // Merge handle filter with param filter
+            Optional<ConnectorExpression> effectiveFilter = filter;
+            if (jdbcHandle.getPushDownFilter().isPresent()) {
+                ConnectorExpression handleFilter = jdbcHandle.getPushDownFilter().get();
+                if (effectiveFilter.isPresent()) {
+                    effectiveFilter = Optional.of(new org.apache.doris.connector.api.pushdown.ConnectorAnd(
+                            java.util.Arrays.asList(handleFilter, effectiveFilter.get())));
+                } else {
+                    effectiveFilter = Optional.of(handleFilter);
+                }
+            }
             LOG.info("JDBC_AGG_PUSHDOWN: getScanNodeProperties for {}.{}, hasPushDownAggregates={}, handle={}",
                     jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(), hasAgg, jdbcHandle);
             if (hasAgg) {
                 querySql = queryBuilder.buildAggregateQuery(
                         jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),
-                        jdbcHandle.getPushDownAggregates(), filter, -1);
+                        jdbcHandle.getPushDownAggregates(), effectiveFilter, -1);
             } else {
                 querySql = queryBuilder.buildQuery(
                         jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),
-                        columns, filter, -1);
+                        columns, effectiveFilter, -1);
             }
             LOG.info("JDBC_AGG_PUSHDOWN: getScanNodeProperties generated query: {}", querySql);
         }

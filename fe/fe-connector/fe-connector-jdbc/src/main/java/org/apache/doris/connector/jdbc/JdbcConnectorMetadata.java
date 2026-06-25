@@ -29,6 +29,8 @@ import org.apache.doris.connector.api.handle.ConnectorTableHandle;
 import org.apache.doris.connector.api.handle.PassthroughQueryTableHandle;
 import org.apache.doris.connector.api.pushdown.AggregateApplicationResult;
 import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
+import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint;
+import org.apache.doris.connector.api.pushdown.FilterApplicationResult;
 import org.apache.doris.connector.api.write.ConnectorWriteConfig;
 import org.apache.doris.connector.api.write.ConnectorWriteType;
 import org.apache.doris.connector.jdbc.client.JdbcConnectorClient;
@@ -219,6 +221,19 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
     }
 
     // ========= ConnectorPushdownOps =========
+
+    @Override
+    public Optional<FilterApplicationResult<ConnectorTableHandle>> applyFilter(
+            ConnectorSession session, ConnectorTableHandle handle,
+            ConnectorFilterConstraint constraint) {
+        if (!(handle instanceof JdbcTableHandle) || constraint == null) {
+            return Optional.empty();
+        }
+        JdbcTableHandle jdbcHandle = (JdbcTableHandle) handle;
+        JdbcTableHandle newHandle = jdbcHandle.withPushDownFilter(constraint.getExpression());
+        // remainingFilter = null means the filter is fully pushed down (no local eval needed)
+        return Optional.of(new FilterApplicationResult<>(newHandle, null, false));
+    }
 
     @Override
     public Optional<AggregateApplicationResult<ConnectorTableHandle>> applyAggregate(
