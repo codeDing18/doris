@@ -258,7 +258,6 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         // Derive (aggFunction, outputSlot) pairs from the output expressions.
         // Each output expression must wrap exactly one aggregate function (no GROUP BY).
         List<AggregateFunction> aggregateFunctions = new ArrayList<>();
-        List<Slot> aggOutputSlots = new ArrayList<>();
         for (NamedExpression outputExpr : aggregate.getOutputExpressions()) {
             Set<AggregateFunction> funcs = outputExpr.collect(AggregateFunction.class::isInstance);
             if (funcs.size() != 1) {
