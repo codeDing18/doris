@@ -99,6 +99,21 @@ public class PhysicalFileScan extends PhysicalCatalogRelation {
     }
 
     /**
+     * Constructor for PhysicalFileScan with physicalProperties, statistics, and pushdown JDBC handle.
+     */
+    public PhysicalFileScan(RelationId id, ExternalTable table, List<String> qualifier,
+            DistributionSpec distributionSpec, Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties, PhysicalProperties physicalProperties,
+            Statistics statistics, SelectedPartitions selectedPartitions,
+            Optional<TableSample> tableSample, Optional<TableSnapshot> tableSnapshot,
+            Collection<Slot> operativeSlots, Optional<TableScanParams> scanParams,
+            Optional<ConnectorTableHandle> pushdownJdbcHandle) {
+        this(id, PlanType.PHYSICAL_FILE_SCAN, table, qualifier, distributionSpec, groupExpression,
+                logicalProperties, physicalProperties, statistics, selectedPartitions, tableSample, tableSnapshot,
+                operativeSlots, scanParams, pushdownJdbcHandle);
+    }
+
+    /**
      * For hudi file scan to specified PlanTye
      */
     protected PhysicalFileScan(RelationId id, PlanType type, ExternalTable table, List<String> qualifier,

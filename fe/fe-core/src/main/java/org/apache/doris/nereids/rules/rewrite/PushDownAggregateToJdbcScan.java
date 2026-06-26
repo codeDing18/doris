@@ -18,14 +18,12 @@
 package org.apache.doris.nereids.rules.rewrite;
 
 import org.apache.doris.catalog.Column;
+import org.apache.doris.connector.api.Connector;
 import org.apache.doris.connector.api.ConnectorMetadata;
 import org.apache.doris.connector.api.ConnectorSession;
-import org.apache.doris.connector.api.Connector;
 import org.apache.doris.connector.api.handle.ConnectorTableHandle;
 import org.apache.doris.connector.api.pushdown.AggregateApplicationResult;
 import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
-import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint;
-import org.apache.doris.connector.api.pushdown.FilterApplicationResult;
 import org.apache.doris.datasource.PluginDrivenExternalCatalog;
 import org.apache.doris.datasource.PluginDrivenExternalTable;
 import org.apache.doris.nereids.rules.Rule;
@@ -45,7 +43,6 @@ import org.apache.doris.nereids.trees.expressions.functions.agg.Sum;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.logical.LogicalAggregate;
 import org.apache.doris.nereids.trees.plans.logical.LogicalFileScan;
-import org.apache.doris.nereids.trees.plans.logical.LogicalFilter;
 import org.apache.doris.nereids.trees.plans.logical.LogicalProject;
 import org.apache.doris.qe.ConnectContext;
 
@@ -95,14 +92,6 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
                 // Shape 2: aggregate(project(scan))
                 logicalAggregate(logicalProject(logicalFileScan().when(this::isJdbcCatalog)))
                         .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
-                        .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
-                // Shape 3: aggregate(filter(scan))
-                logicalAggregate(logicalFilter(logicalFileScan().when(this::isJdbcCatalog)))
-                        .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
-                        .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN),
-                // Shape 4: aggregate(project(filter(scan)))
-                logicalAggregate(logicalProject(logicalFilter(logicalFileScan().when(this::isJdbcCatalog))))
-                        .then(agg -> tryPushDown((LogicalAggregate<? extends Plan>) agg))
                         .toRule(RuleType.JDBC_AGGREGATE_PUSHDOWN));
     }
 
@@ -127,15 +116,10 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
             return null;
         }
 
-        // Unwrap optional LogicalFilter and LogicalProject layers to reach the file scan.
+        // Unwrap optional LogicalProject layer to reach the file scan.
         Plan child = aggregate.child(0);
-        LogicalFilter<? extends Plan> filter = null;
         LogicalProject<? extends Plan> project = null;
 
-        if (child instanceof LogicalFilter) {
-            filter = (LogicalFilter<? extends Plan>) child;
-            child = filter.child(0);
-        }
         if (child instanceof LogicalProject) {
             project = (LogicalProject<? extends Plan>) child;
             child = project.child(0);
@@ -147,41 +131,9 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         }
         LogicalFileScan fileScan = (LogicalFileScan) child;
 
-        LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, hasFilter={}, hasProject={}",
-                aggregate.getOutput(), filter != null, project != null);
+        LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, hasProject={}",
+                aggregate.getOutput(), project != null);
 
-        if (filter != null) {
-            return pushdownAggregateWithFilter(aggregate, filter, project, fileScan);
-        }
-        return pushdownAggregateWithoutFilter(aggregate, project, fileScan);
-    }
-
-    /**
-     * Pushes down aggregates with a filter: applies the filter and aggregates to a
-     * fresh connector handle (via SPI), stores the updated handle in the scan, and
-     * eliminates both the filter and aggregate nodes.
-     */
-    private Plan pushdownAggregateWithFilter(LogicalAggregate<? extends Plan> aggregate,
-            LogicalFilter<? extends Plan> filter, LogicalProject<? extends Plan> project,
-            LogicalFileScan fileScan) {
-        return pushdownAggregateCommon(aggregate, filter, project, fileScan);
-    }
-
-    /**
-     * Pushes down aggregates without a filter.
-     */
-    private Plan pushdownAggregateWithoutFilter(LogicalAggregate<? extends Plan> aggregate,
-            LogicalProject<? extends Plan> project, LogicalFileScan fileScan) {
-        return pushdownAggregateCommon(aggregate, null, project, fileScan);
-    }
-
-    /**
-     * Common logic: parse aggregates, build virtual-column output, apply filter+aggregate
-     * to a fresh connector handle, and return scan.withPushdownJdbcHandle.
-     */
-    private Plan pushdownAggregateCommon(LogicalAggregate<? extends Plan> aggregate,
-            LogicalFilter<? extends Plan> filter, LogicalProject<? extends Plan> project,
-            LogicalFileScan fileScan) {
         // Build the ConnectorAggregate list (returns null if unsupported).
         List<Slot> aggOutputSlots = new ArrayList<>();
         List<ConnectorAggregate> aggregates = buildConnectorAggregates(aggregate, project, aggOutputSlots);
@@ -190,14 +142,14 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
             return null;
         }
 
-        // Get a fresh connector handle and apply filter + aggregate via SPI.
-        ConnectorTableHandle handle = resolveAndApplyPushdown(fileScan, filter, aggregates);
+        // Get a fresh connector handle and apply aggregate via SPI.
+        ConnectorTableHandle handle = resolveAndApplyPushdown(fileScan, aggregates);
         if (handle == null) {
-            LOG.info("JDBC_AGG_PUSHDOWN: skip, failed to apply filter/aggregate to connector handle");
+            LOG.info("JDBC_AGG_PUSHDOWN: skip, failed to apply aggregate to connector handle");
             return null;
         }
 
-        // Build new scan output with virtual columns (same as before).
+        // Build new scan output with virtual columns.
         List<Slot> newOutput = new ArrayList<>();
         for (Slot slot : aggOutputSlots) {
             SlotReference slotRef = (SlotReference) slot;
@@ -214,11 +166,11 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
     }
 
     /**
-     * Resolves a fresh ConnectorTableHandle from the connector, then applies filter
-     * (if present) and aggregates via SPI. Returns the updated handle, or null on failure.
+     * Resolves a fresh ConnectorTableHandle from the connector and applies aggregates via SPI.
+     * Returns the updated handle, or null on failure.
      */
     private ConnectorTableHandle resolveAndApplyPushdown(LogicalFileScan fileScan,
-            LogicalFilter<? extends Plan> filter, List<ConnectorAggregate> aggregates) {
+            List<ConnectorAggregate> aggregates) {
         PluginDrivenExternalTable table = (PluginDrivenExternalTable) fileScan.getTable();
         PluginDrivenExternalCatalog catalog = (PluginDrivenExternalCatalog) table.getCatalog();
         Connector connector = catalog.getConnector();
@@ -232,29 +184,8 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
             LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - table handle not found for {}.{}", dbName, tableName);
             return null;
         }
-        LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - fresh handle={}, hasFilter={}", handle, filter != null);
+        LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - fresh handle={}", handle);
 
-        // Apply filter if present (convert Nereids conjuncts to ConnectorFilterConstraint).
-        if (filter != null) {
-            ConnectorExpression filterExpr = NereidsToConnectorExpression.convertConjuncts(
-                    new ArrayList<>(filter.getConjuncts()));
-            if (filterExpr == null) {
-                LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - filter conversion failed, conjuncts={}",
-                        filter.getConjuncts());
-            } else {
-                ConnectorFilterConstraint constraint = new ConnectorFilterConstraint(filterExpr);
-                Optional<FilterApplicationResult<ConnectorTableHandle>> result =
-                        metadata.applyFilter(session, handle, constraint);
-                if (result.isPresent()) {
-                    handle = result.get().getHandle();
-                    LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - applyFilter succeeded, handle={}", handle);
-                } else {
-                    LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - applyFilter rejected by connector");
-                }
-            }
-        }
-
-        // Apply aggregates.
         Optional<AggregateApplicationResult<ConnectorTableHandle>> result =
                 metadata.applyAggregate(session, handle, aggregates);
         if (!result.isPresent()) {
