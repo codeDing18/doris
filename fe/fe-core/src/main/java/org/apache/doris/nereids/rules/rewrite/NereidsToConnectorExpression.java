@@ -17,20 +17,21 @@
 
 package org.apache.doris.nereids.rules.rewrite;
 
+import org.apache.doris.connector.api.ConnectorType;
 import org.apache.doris.connector.api.pushdown.ConnectorAnd;
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef;
 import org.apache.doris.connector.api.pushdown.ConnectorComparison;
 import org.apache.doris.connector.api.pushdown.ConnectorExpression;
-import org.apache.doris.connector.api.pushdown.ConnectorType;
+import org.apache.doris.connector.api.pushdown.ConnectorLiteral;
+import org.apache.doris.nereids.trees.expressions.ComparisonPredicate;
 import org.apache.doris.nereids.trees.expressions.EqualTo;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.GreaterThan;
 import org.apache.doris.nereids.trees.expressions.GreaterThanEqual;
 import org.apache.doris.nereids.trees.expressions.LessThan;
 import org.apache.doris.nereids.trees.expressions.LessThanEqual;
-import org.apache.doris.nereids.trees.expressions.NotEqualTo;
+import org.apache.doris.nereids.trees.expressions.NullSafeEqual;
 import org.apache.doris.nereids.trees.expressions.SlotReference;
-import org.apache.doris.nereids.trees.expressions.functions.ComparisonPredicate;
 import org.apache.doris.nereids.trees.expressions.literal.Literal;
 
 import java.util.ArrayList;
@@ -90,33 +91,32 @@ final class NereidsToConnectorExpression {
 
     private static ConnectorExpression convertLiteral(Literal lit) {
         if (lit instanceof org.apache.doris.nereids.trees.expressions.literal.IntegerLiteral) {
-            return new org.apache.doris.connector.api.pushdown.ConnectorLiteral(
+            return new ConnectorLiteral(
                     ConnectorType.BIGINT,
                     ((org.apache.doris.nereids.trees.expressions.literal.IntegerLiteral) lit).getLong());
         }
         if (lit instanceof org.apache.doris.nereids.trees.expressions.literal.StringLiteral) {
-            return new org.apache.doris.connector.api.pushdown.ConnectorLiteral(
+            return new ConnectorLiteral(
                     ConnectorType.VARCHAR,
                     ((org.apache.doris.nereids.trees.expressions.literal.StringLiteral) lit).getValue().toString());
         }
         if (lit instanceof org.apache.doris.nereids.trees.expressions.literal.VarcharLiteral) {
-            return new org.apache.doris.connector.api.pushdown.ConnectorLiteral(
+            return new ConnectorLiteral(
                     ConnectorType.VARCHAR,
                     ((org.apache.doris.nereids.trees.expressions.literal.VarcharLiteral) lit).getValue());
         }
         if (lit instanceof org.apache.doris.nereids.trees.expressions.literal.BooleanLiteral) {
-            return new org.apache.doris.connector.api.pushdown.ConnectorLiteral(
+            return new ConnectorLiteral(
                     ConnectorType.BOOLEAN,
                     ((org.apache.doris.nereids.trees.expressions.literal.BooleanLiteral) lit).getValue());
         }
         if (lit instanceof org.apache.doris.nereids.trees.expressions.literal.DecimalLiteral) {
-            return new org.apache.doris.connector.api.pushdown.ConnectorLiteral(
+            return new ConnectorLiteral(
                     ConnectorType.DECIMAL,
                     new java.math.BigDecimal(
                             ((org.apache.doris.nereids.trees.expressions.literal.DecimalLiteral) lit).getValue()));
         }
-        return new org.apache.doris.connector.api.pushdown.ConnectorLiteral(
-                ConnectorType.VARCHAR, lit.getStringValue());
+        return new ConnectorLiteral(ConnectorType.VARCHAR, lit.getStringValue());
     }
 
     private static ConnectorExpression convertComparison(ComparisonPredicate pred) {
@@ -128,8 +128,6 @@ final class NereidsToConnectorExpression {
         ConnectorComparison.Operator op;
         if (pred instanceof EqualTo) {
             op = ConnectorComparison.Operator.EQ;
-        } else if (pred instanceof NotEqualTo) {
-            op = ConnectorComparison.Operator.NE;
         } else if (pred instanceof GreaterThan) {
             op = ConnectorComparison.Operator.GT;
         } else if (pred instanceof GreaterThanEqual) {
@@ -138,6 +136,8 @@ final class NereidsToConnectorExpression {
             op = ConnectorComparison.Operator.LT;
         } else if (pred instanceof LessThanEqual) {
             op = ConnectorComparison.Operator.LE;
+        } else if (pred instanceof NullSafeEqual) {
+            op = ConnectorComparison.Operator.IS_NOT_DISTINCT_FROM;
         } else {
             return null;
         }
