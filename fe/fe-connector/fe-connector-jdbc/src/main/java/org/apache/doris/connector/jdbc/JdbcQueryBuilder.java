@@ -233,7 +233,7 @@ public final class JdbcQueryBuilder {
                     : JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, agg.getColumnName());
             String distinct = agg.isDistinct() && !isCountStar ? "DISTINCT " : "";
             String alias = JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, agg.getAlias());
-            aggJoiner.add(agg.getFunctionName() + "(" + distinct + col + ") AS " + alias);
+            aggJoiner.add(buildAggregateExpression(agg, col, distinct) + " AS " + alias);
         }
         sql.append(aggJoiner.toString());
 
@@ -259,6 +259,34 @@ public final class JdbcQueryBuilder {
         }
 
         return sql.toString();
+    }
+
+    private static final Set<String> INTEGER_TYPES = new HashSet<>(Arrays.asList(
+            "BIGINT", "INT", "SMALLINT", "TINYINT", "LARGEINT"));
+
+    /**
+     * Builds the aggregate function expression for one {@link ConnectorAggregate}.
+     * <p>For {@code AVG}, the rendering depends on the column type to match Doris semantics:
+     * <ul>
+     *   <li>integer types: Doris {@code avg(int)} returns double, but MySQL {@code AVG(bigint)}
+     *       truncates to decimal/integer. Force floating-point with {@code AVG((col * 1.0))}.
+     *   <li>others (decimal/double/float): plain {@code AVG(col)}. MySQL computes AVG with
+     *       sufficient precision natively; Doris's output column ({@code decimal(38, max(s,4))}
+     *       or {@code double}) is wide enough to hold it without truncation.
+     * </ul>
+     * Other functions (SUM/COUNT/MIN/MAX) are rendered as {@code FN(col)}.
+     */
+    private String buildAggregateExpression(ConnectorAggregate agg, String col, String distinct) {
+        String fn = agg.getFunctionName().toUpperCase();
+        if (!"AVG".equals(fn)) {
+            return fn + "(" + distinct + col + ")";
+        }
+        ConnectorType type = agg.getColumnType();
+        if (type != null && INTEGER_TYPES.contains(type.getTypeName().toUpperCase())) {
+            // avg(integer) -> Doris double; MySQL would truncate, so promote to double.
+            return "AVG((" + col + " * 1.0))";
+        }
+        return "AVG(" + distinct + col + ")";
     }
 
     private boolean shouldPushDownLimit(long limit, boolean allFiltersCollected,

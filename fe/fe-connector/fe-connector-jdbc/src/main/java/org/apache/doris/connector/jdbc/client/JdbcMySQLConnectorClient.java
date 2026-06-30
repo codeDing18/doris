@@ -19,6 +19,7 @@ package org.apache.doris.connector.jdbc.client;
 
 import org.apache.doris.connector.api.ConnectorType;
 import org.apache.doris.connector.api.DorisConnectorException;
+import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
 import org.apache.doris.connector.jdbc.JdbcDbType;
 
 import org.apache.logging.log4j.LogManager;
@@ -66,6 +67,29 @@ public class JdbcMySQLConnectorClient extends JdbcConnectorClient {
     @Override
     protected void postInitialize() {
         detectDoris();
+    }
+
+    private static final Set<String> SUPPORTED_AGG_FUNCTIONS =
+            Set.of("sum", "count", "avg", "min", "max");
+
+    @Override
+    public boolean supportsAggregatePushdown(ConnectorAggregate agg) {
+        String fn = agg.getFunctionName().toLowerCase();
+        // MySQL collation is case-insensitive; min/max on textual types would sort
+        // differently from Doris, so do not push these down.
+        if (("min".equals(fn) || "max".equals(fn)) && isTextualType(agg.getColumnType())) {
+            return false;
+        }
+        return SUPPORTED_AGG_FUNCTIONS.contains(fn);
+    }
+
+    private static boolean isTextualType(ConnectorType type) {
+        if (type == null) {
+            return false;
+        }
+        String name = type.getTypeName().toUpperCase();
+        return name.equals("VARCHAR") || name.equals("CHAR")
+                || name.equals("STRING") || name.equals("TEXT");
     }
 
     private void detectDoris() {

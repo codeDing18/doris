@@ -19,6 +19,7 @@ package org.apache.doris.connector.jdbc.client;
 
 import org.apache.doris.connector.api.ConnectorType;
 import org.apache.doris.connector.api.DorisConnectorException;
+import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
 import org.apache.doris.connector.jdbc.JdbcDbType;
 
 import com.zaxxer.hikari.HikariDataSource;
@@ -300,6 +301,14 @@ public abstract class JdbcConnectorClient implements Closeable {
 
     public JdbcDbType getDbType() {
         return dbType;
+    }
+
+    /**
+     * Whether this JDBC dialect supports pushing down the given aggregate.
+     * Default: not supported. Subclasses (e.g. MySQL) override to enable.
+     */
+    public boolean supportsAggregatePushdown(ConnectorAggregate agg) {
+        return false;
     }
 
     // -- connection helpers --

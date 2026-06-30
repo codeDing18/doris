@@ -21,6 +21,7 @@ import org.apache.doris.catalog.Column;
 import org.apache.doris.connector.api.Connector;
 import org.apache.doris.connector.api.ConnectorMetadata;
 import org.apache.doris.connector.api.ConnectorSession;
+import org.apache.doris.connector.api.ConnectorType;
 import org.apache.doris.connector.api.handle.ConnectorTableHandle;
 import org.apache.doris.connector.api.pushdown.AggregateApplicationResult;
 import org.apache.doris.connector.api.pushdown.ConnectorAggregate;
@@ -35,11 +36,19 @@ import org.apache.doris.nereids.trees.expressions.NamedExpression;
 import org.apache.doris.nereids.trees.expressions.Slot;
 import org.apache.doris.nereids.trees.expressions.SlotReference;
 import org.apache.doris.nereids.trees.expressions.functions.agg.AggregateFunction;
-import org.apache.doris.nereids.trees.expressions.functions.agg.Avg;
 import org.apache.doris.nereids.trees.expressions.functions.agg.Count;
-import org.apache.doris.nereids.trees.expressions.functions.agg.Max;
-import org.apache.doris.nereids.trees.expressions.functions.agg.Min;
-import org.apache.doris.nereids.trees.expressions.functions.agg.Sum;
+import org.apache.doris.nereids.types.BigIntType;
+import org.apache.doris.nereids.types.DataType;
+import org.apache.doris.nereids.types.DecimalV3Type;
+import org.apache.doris.nereids.types.DoubleType;
+import org.apache.doris.nereids.types.FloatType;
+import org.apache.doris.nereids.types.IntegerType;
+import org.apache.doris.nereids.types.LargeIntType;
+import org.apache.doris.nereids.types.SmallIntType;
+import org.apache.doris.nereids.types.TinyIntType;
+import org.apache.doris.nereids.types.StringType;
+import org.apache.doris.nereids.types.VarcharType;
+import org.apache.doris.nereids.types.coercion.CharacterType;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.logical.LogicalAggregate;
 import org.apache.doris.nereids.trees.plans.logical.LogicalFileScan;
@@ -231,21 +240,17 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
     }
 
     /**
-     * Returns true if the aggregate function is supported for pushdown:
-     * SUM/COUNT/AVG/MIN/MAX with a single SlotReference argument, or COUNT(*).
+     * Returns true if the aggregate function is structurally pushable:
+     * a single SlotReference argument, or COUNT(*).
+     * <p>The actual function-level support (e.g. whether MySQL accepts this
+     * function) is decided later by the connector via
+     * {@code JdbcConnectorClient.supportsAggregatePushdown}.
      */
     private boolean isSupported(AggregateFunction func) {
-        if (func instanceof Sum || func instanceof Avg || func instanceof Min || func instanceof Max) {
-            return func.arity() == 1 && func.child(0) instanceof SlotReference;
+        if (func instanceof Count && ((Count) func).isCountStar()) {
+            return true;
         }
-        if (func instanceof Count) {
-            Count count = (Count) func;
-            if (count.isCountStar()) {
-                return true;
-            }
-            return count.arity() == 1 && count.child(0) instanceof SlotReference;
-        }
-        return false;
+        return func.arity() == 1 && func.child(0) instanceof SlotReference;
     }
 
     /**
@@ -277,13 +282,14 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         List<ConnectorAggregate> aggregates = new ArrayList<>();
         for (int index = 0; index < aggregateFunctions.size(); index++) {
             AggregateFunction aggFunc = aggregateFunctions.get(index);
+            // Pass the nereids function name (lowercase, e.g. "sum"); the connector decides
+            // whether it is supported via JdbcConnectorClient.supportsAggregatePushdown.
             String functionName = aggFunc.getName().toLowerCase();
-            String sqlFunctionName;
             String columnName;
+            ConnectorType columnType = null;
             boolean distinct = aggFunc.isDistinct();
 
             if (aggFunc instanceof Count && ((Count) aggFunc).isCountStar()) {
-                sqlFunctionName = "COUNT";
                 columnName = "*";
                 distinct = false;  // count(*) has no distinct
             } else {
@@ -296,32 +302,13 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
                     return null;
                 }
                 columnName = realColumnName;
-                switch (functionName) {
-                    case "sum":
-                        sqlFunctionName = "SUM";
-                        break;
-                    case "count":
-                        sqlFunctionName = "COUNT";
-                        break;
-                    case "avg":
-                        sqlFunctionName = "AVG";
-                        break;
-                    case "min":
-                        sqlFunctionName = "MIN";
-                        break;
-                    case "max":
-                        sqlFunctionName = "MAX";
-                        break;
-                    default:
-                        LOG.info("JDBC_AGG_PUSHDOWN: function '{}' is not supported", functionName);
-                        return null;
-                }
+                columnType = toConnectorType(slot.getDataType());
             }
 
             String alias = aggOutputSlots.get(index).getName();
-            aggregates.add(new ConnectorAggregate(sqlFunctionName, columnName, alias, distinct));
-            LOG.info("JDBC_AGG_PUSHDOWN: built ConnectorAggregate: {}({}{}) AS {}",
-                    sqlFunctionName, distinct ? "DISTINCT " : "", columnName, alias);
+            aggregates.add(new ConnectorAggregate(functionName, columnName, alias, distinct, columnType));
+            LOG.info("JDBC_AGG_PUSHDOWN: built ConnectorAggregate: {}({}{}) AS {} type={}",
+                    functionName, distinct ? "DISTINCT " : "", columnName, alias, columnType);
         }
 
         LOG.info("JDBC_AGG_PUSHDOWN: built {} aggregate(s), rewriting plan", aggregates.size());
@@ -348,5 +335,50 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
             }
         }
         return slot.getName();
+    }
+
+    /**
+     * Converts a nereids {@link DataType} to a connector-side {@link ConnectorType},
+     * so the connector can make type-aware pushdown decisions (e.g. {@code AVG} on
+     * integer vs decimal, {@code MIN}/{@code MAX} on textual types).
+     * Returns null for types not relevant to aggregate pushdown.
+     */
+    private static ConnectorType toConnectorType(DataType dt) {
+        if (dt instanceof DecimalV3Type) {
+            DecimalV3Type decimal = (DecimalV3Type) dt;
+            return ConnectorType.of("DECIMALV3", decimal.getPrecision(), decimal.getScale());
+        }
+        if (dt instanceof BigIntType) {
+            return ConnectorType.of("BIGINT");
+        }
+        if (dt instanceof LargeIntType) {
+            return ConnectorType.of("LARGEINT");
+        }
+        if (dt instanceof IntegerType) {
+            return ConnectorType.of("INT");
+        }
+        if (dt instanceof SmallIntType) {
+            return ConnectorType.of("SMALLINT");
+        }
+        if (dt instanceof TinyIntType) {
+            return ConnectorType.of("TINYINT");
+        }
+        if (dt instanceof DoubleType) {
+            return ConnectorType.of("DOUBLE");
+        }
+        if (dt instanceof FloatType) {
+            return ConnectorType.of("FLOAT");
+        }
+        if (dt instanceof VarcharType) {
+            return ConnectorType.of("VARCHAR", ((CharacterType) dt).getLen(), -1);
+        }
+        if (dt instanceof StringType) {
+            // MySQL TEXT/TINYTEXT/MEDIUMTEXT/LONGTEXT map to Doris StringType.
+            return ConnectorType.of("STRING");
+        }
+        if (dt instanceof CharacterType) {
+            return ConnectorType.of("CHAR", ((CharacterType) dt).getLen(), -1);
+        }
+        return ConnectorType.of(dt.toString().toUpperCase());
     }
 }

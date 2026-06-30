@@ -17,6 +17,8 @@
 
 package org.apache.doris.connector.api.pushdown;
 
+import org.apache.doris.connector.api.ConnectorType;
+
 import java.io.Serializable;
 import java.util.Objects;
 
@@ -25,21 +27,29 @@ import java.util.Objects;
  *
  * <p>Represents a function call of the form {@code FN([DISTINCT ]column) AS alias}.
  * For {@code COUNT(*)}, use {@code columnName = "*"}.
+ *
+ * <p>{@code columnType} carries the column's {@link ConnectorType} so the connector
+ * can decide pushability and SQL rewriting by type (e.g. {@code AVG} on integer needs
+ * {@code *1.0}, on decimal needs {@code CAST}; {@code MIN}/{@code MAX} on textual types
+ * may be rejected). It is {@code null} for {@code COUNT(*)}.
  */
 public final class ConnectorAggregate implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final String functionName;  // "SUM", "COUNT", "AVG", "MIN", "MAX"
+    private final String functionName;  // nereids function name, lowercase, e.g. "sum", "count"
     private final String columnName;    // column name, or "*" for count(*)
     private final String alias;         // output alias
     private final boolean distinct;     // function-level DISTINCT
+    private final ConnectorType columnType;  // null for count(*)
 
-    public ConnectorAggregate(String functionName, String columnName, String alias, boolean distinct) {
+    public ConnectorAggregate(String functionName, String columnName, String alias,
+            boolean distinct, ConnectorType columnType) {
         this.functionName = Objects.requireNonNull(functionName, "functionName");
         this.columnName = Objects.requireNonNull(columnName, "columnName");
         this.alias = Objects.requireNonNull(alias, "alias");
         this.distinct = distinct;
+        this.columnType = columnType;
     }
 
     public String getFunctionName() {
@@ -58,6 +68,10 @@ public final class ConnectorAggregate implements Serializable {
         return distinct;
     }
 
+    public ConnectorType getColumnType() {
+        return columnType;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -70,12 +84,13 @@ public final class ConnectorAggregate implements Serializable {
         return distinct == that.distinct
                 && functionName.equals(that.functionName)
                 && columnName.equals(that.columnName)
-                && alias.equals(that.alias);
+                && alias.equals(that.alias)
+                && Objects.equals(columnType, that.columnType);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(functionName, columnName, alias, distinct);
+        return Objects.hash(functionName, columnName, alias, distinct, columnType);
     }
 
     @Override

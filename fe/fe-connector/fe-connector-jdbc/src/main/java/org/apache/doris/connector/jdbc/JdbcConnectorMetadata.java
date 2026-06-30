@@ -231,6 +231,12 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
                     aggregates == null || aggregates.isEmpty());
             return Optional.empty();
         }
+        for (ConnectorAggregate agg : aggregates) {
+            if (!client.supportsAggregatePushdown(agg)) {
+                LOG.info("JDBC_AGG_PUSHDOWN: client rejected agg: {}", agg);
+                return Optional.empty();
+            }
+        }
         JdbcTableHandle jdbcHandle = (JdbcTableHandle) handle;
         JdbcTableHandle newHandle = jdbcHandle.withPushDownAggregates(aggregates);
         LOG.info("JDBC_AGG_PUSHDOWN: applyAggregate produced new handle={}", newHandle);
