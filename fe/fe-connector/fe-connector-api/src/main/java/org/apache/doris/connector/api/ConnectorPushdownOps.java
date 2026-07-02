@@ -68,6 +68,20 @@ public interface ConnectorPushdownOps {
     }
 
     /**
+     * Attempts to push aggregates (optionally with a single group-by column) into the table scan.
+     * <p>Connectors that support grouped aggregate pushdown override this method.
+     * The default implementation delegates to {@link #applyAggregate} (ignoring group-by),
+     * so connectors that don't support group-by pushdown simply reject it via the base method.
+     */
+    default Optional<AggregateApplicationResult<ConnectorTableHandle>>
+            applyAggregate(ConnectorSession session,
+                    ConnectorTableHandle handle,
+                    List<ConnectorAggregate> aggregates,
+                    List<String> groupByColumns) {
+        return applyAggregate(session, handle, aggregates);
+    }
+
+    /**
      * Returns whether this connector supports pushing down predicates that contain
      * implicit CAST expressions.
      *

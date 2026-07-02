@@ -26,8 +26,12 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Opaque table handle carrying the remote database/table coordinates
- * and optional pushdown aggregates.
+ * Opaque table handle carrying the remote database/table coordinates,
+ * optional pushdown aggregates, and optional group-by columns.
+ *
+ * <p>When {@code groupByColumns} is non-empty, the aggregate is a grouped
+ * aggregate (e.g. {@code SELECT k, SUM(v) FROM t GROUP BY k}); otherwise it is
+ * a global aggregate (e.g. {@code SELECT SUM(v) FROM t}).
  */
 public class JdbcTableHandle implements ConnectorTableHandle {
 
@@ -36,16 +40,23 @@ public class JdbcTableHandle implements ConnectorTableHandle {
     private final String remoteDbName;
     private final String remoteTableName;
     private final List<ConnectorAggregate> pushDownAggregates;
+    private final List<String> groupByColumns;
 
     public JdbcTableHandle(String remoteDbName, String remoteTableName) {
-        this(remoteDbName, remoteTableName, Collections.emptyList());
+        this(remoteDbName, remoteTableName, Collections.emptyList(), Collections.emptyList());
     }
 
     public JdbcTableHandle(String remoteDbName, String remoteTableName,
             List<ConnectorAggregate> pushDownAggregates) {
+        this(remoteDbName, remoteTableName, pushDownAggregates, Collections.emptyList());
+    }
+
+    public JdbcTableHandle(String remoteDbName, String remoteTableName,
+            List<ConnectorAggregate> pushDownAggregates, List<String> groupByColumns) {
         this.remoteDbName = remoteDbName;
         this.remoteTableName = remoteTableName;
         this.pushDownAggregates = new ArrayList<>(pushDownAggregates);
+        this.groupByColumns = new ArrayList<>(groupByColumns);
     }
 
     public String getRemoteDbName() {
@@ -64,14 +75,28 @@ public class JdbcTableHandle implements ConnectorTableHandle {
         return !pushDownAggregates.isEmpty();
     }
 
+    public List<String> getGroupByColumns() {
+        return groupByColumns;
+    }
+
+    public boolean hasGroupBy() {
+        return !groupByColumns.isEmpty();
+    }
+
     public JdbcTableHandle withPushDownAggregates(List<ConnectorAggregate> aggregates) {
-        return new JdbcTableHandle(remoteDbName, remoteTableName, aggregates);
+        return new JdbcTableHandle(remoteDbName, remoteTableName, aggregates, groupByColumns);
+    }
+
+    public JdbcTableHandle withPushDownAggregates(List<ConnectorAggregate> aggregates,
+            List<String> groupByColumns) {
+        return new JdbcTableHandle(remoteDbName, remoteTableName, aggregates, groupByColumns);
     }
 
     @Override
     public String toString() {
         return "JdbcTableHandle{" + remoteDbName + "." + remoteTableName
-                + (hasPushDownAggregates() ? ", aggs=" + pushDownAggregates : "") + "}";
+                + (hasPushDownAggregates() ? ", aggs=" + pushDownAggregates : "")
+                + (hasGroupBy() ? ", groupBy=" + groupByColumns : "") + "}";
     }
 
     @Override
@@ -85,11 +110,12 @@ public class JdbcTableHandle implements ConnectorTableHandle {
         JdbcTableHandle that = (JdbcTableHandle) o;
         return Objects.equals(remoteDbName, that.remoteDbName)
                 && Objects.equals(remoteTableName, that.remoteTableName)
-                && Objects.equals(pushDownAggregates, that.pushDownAggregates);
+                && Objects.equals(pushDownAggregates, that.pushDownAggregates)
+                && Objects.equals(groupByColumns, that.groupByColumns);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(remoteDbName, remoteTableName, pushDownAggregates);
+        return Objects.hash(remoteDbName, remoteTableName, pushDownAggregates, groupByColumns);
     }
 }

@@ -194,19 +194,21 @@ public final class JdbcQueryBuilder {
     /**
      * Builds a SELECT query that pushes down aggregate functions to the remote database.
      *
-     * <p>Generates: {@code SELECT FN(col) AS alias, ... FROM db.table [WHERE ...] [LIMIT n]}.
+     * <p>Generates: {@code SELECT [gb_col, ] FN(col) AS alias, ... FROM db.table
+     * [WHERE ...] [GROUP BY gb_col] [LIMIT n]}.
      * For {@code COUNT(*)}, columnName is {@code "*"}.
      * DISTINCT is placed inside the function: {@code FN(DISTINCT col)}.
      *
      * @param remoteDbName    the remote database name
      * @param remoteTableName the remote table name
      * @param aggregates      the aggregate functions to push down
+     * @param groupByColumns  the group-by column names (empty for global aggregate)
      * @param filter          the optional filter expression (applied as WHERE)
      * @param limit           the row limit, or -1 for no limit
      * @return the complete SQL query string
      */
     public String buildAggregateQuery(String remoteDbName, String remoteTableName,
-            List<ConnectorAggregate> aggregates,
+            List<ConnectorAggregate> aggregates, List<String> groupByColumns,
             Optional<ConnectorExpression> filter, long limit) {
         // Build column name mapping for filter resolution (empty for agg queries —
         // filters reference base table columns, resolved via ConnectorColumnRef name).
@@ -225,17 +227,20 @@ public final class JdbcQueryBuilder {
             sql.append("TOP ").append(limit).append(" ");
         }
 
-        // Aggregate columns
-        StringJoiner aggJoiner = new StringJoiner(", ");
+        // Select list: group-by columns first, then aggregate columns.
+        StringJoiner selectJoiner = new StringJoiner(", ");
+        for (String gbCol : groupByColumns) {
+            selectJoiner.add(JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, gbCol));
+        }
         for (ConnectorAggregate agg : aggregates) {
             boolean isCountStar = "*".equals(agg.getColumnName());
             String col = isCountStar ? "*"
                     : JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, agg.getColumnName());
             String distinct = agg.isDistinct() && !isCountStar ? "DISTINCT " : "";
             String alias = JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, agg.getAlias());
-            aggJoiner.add(buildAggregateExpression(agg, col, distinct) + " AS " + alias);
+            selectJoiner.add(buildAggregateExpression(agg, col, distinct) + " AS " + alias);
         }
-        sql.append(aggJoiner.toString());
+        sql.append(selectJoiner.toString());
 
         // FROM clause
         sql.append(" FROM ");
@@ -246,6 +251,15 @@ public final class JdbcQueryBuilder {
             sql.append(" WHERE (");
             sql.append(String.join(") AND (", filterClauses));
             sql.append(")");
+        }
+
+        // GROUP BY clause
+        if (groupByColumns != null && !groupByColumns.isEmpty()) {
+            StringJoiner groupByJoiner = new StringJoiner(", ");
+            for (String gbCol : groupByColumns) {
+                groupByJoiner.add(JdbcIdentifierQuoter.quoteRemoteIdentifier(dbType, gbCol));
+            }
+            sql.append(" GROUP BY ").append(groupByJoiner.toString());
         }
 
         // LIMIT clause

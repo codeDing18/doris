@@ -108,6 +108,8 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
      * Tries to push down the aggregate to a JDBC file scan. Returns null (no rewrite)
      * when the session variable is disabled, any aggregate is unsupported, or the
      * scan is not on a JDBC catalog.
+     *
+     * <p>Supports global aggregates (no GROUP BY) and single-column GROUP BY.
      */
     private Plan tryPushDown(LogicalAggregate<? extends Plan> aggregate) {
         LOG.info("JDBC_AGG_PUSHDOWN: tryPushDown called, output={}, childClass={}",
@@ -116,10 +118,10 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, enable_jdbc_pushdown_aggregate=false");
             return null;
         }
-        if (!aggregate.getGroupByExpressions().isEmpty()) {
-            LOG.info("JDBC_AGG_PUSHDOWN: skip, aggregate has GROUP BY");
-            return null;
-        }
+        // Supports global aggregates (no GROUP BY) and multi-column GROUP BY.
+        // ROLLUP/CUBE/GROUPING SETS produce a LogicalRepeat node (not LogicalAggregate),
+        // so this rule never matches them — no extra check needed.
+        List<Expression> groupByExprs = aggregate.getGroupByExpressions();
         if (!aggregate.getDistinctArguments().isEmpty()) {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, aggregate has DISTINCT arguments");
             return null;
@@ -140,31 +142,56 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         }
         LogicalFileScan fileScan = (LogicalFileScan) child;
 
-        LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, hasProject={}",
-                aggregate.getOutput(), project != null);
+        // Resolve group-by column names (every group-by expression must be a plain column).
+        List<String> groupByColumns = new ArrayList<>();
+        for (Expression gb : groupByExprs) {
+            if (!(gb instanceof SlotReference)) {
+                LOG.info("JDBC_AGG_PUSHDOWN: skip, group-by expression is not a plain column: {}", gb);
+                return null;
+            }
+            String gbColName = resolveColumnName((SlotReference) gb, project);
+            if (gbColName == null) {
+                LOG.info("JDBC_AGG_PUSHDOWN: skip, cannot resolve group-by column name");
+                return null;
+            }
+            groupByColumns.add(gbColName);
+        }
+
+        LOG.info("JDBC_AGG_PUSHDOWN: matching aggregate with output={}, hasProject={}, groupBy={}",
+                aggregate.getOutput(), project != null, groupByColumns);
 
         // Build the ConnectorAggregate list (returns null if unsupported).
-        List<Slot> aggOutputSlots = new ArrayList<>();
-        List<ConnectorAggregate> aggregates = buildConnectorAggregates(aggregate, project, aggOutputSlots);
+        // groupBySlots collects the group-by output slots (they go into newOutput but
+        // are not wrapped in virtual columns, unlike aggregate function outputs).
+        List<Slot> outputSlots = new ArrayList<>();
+        List<Slot> groupBySlots = new ArrayList<>();
+        List<ConnectorAggregate> aggregates =
+                buildConnectorAggregates(aggregate, project, outputSlots, groupBySlots);
         if (aggregates == null) {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, some aggregate function or argument is unsupported");
             return null;
         }
 
         // Get a fresh connector handle and apply aggregate via SPI.
-        ConnectorTableHandle handle = resolveAndApplyPushdown(fileScan, aggregates);
+        ConnectorTableHandle handle = resolveAndApplyPushdown(fileScan, aggregates, groupByColumns);
         if (handle == null) {
             LOG.info("JDBC_AGG_PUSHDOWN: skip, failed to apply aggregate to connector handle");
             return null;
         }
 
-        // Build new scan output with virtual columns.
+        // Build new scan output. Group-by columns reuse the original Column (they are
+        // base-table columns); aggregate function outputs get virtual columns.
         List<Slot> newOutput = new ArrayList<>();
-        for (Slot slot : aggOutputSlots) {
+        for (Slot slot : outputSlots) {
             SlotReference slotRef = (SlotReference) slot;
-            Column virtualColumn = new Column(slot.getName(),
-                    slotRef.getDataType().toCatalogDataType(), true);
-            newOutput.add(slotRef.withColumn(virtualColumn));
+            if (groupBySlots.contains(slot)) {
+                // group-by column: keep the original Column backing the slot.
+                newOutput.add(slotRef);
+            } else {
+                Column virtualColumn = new Column(slot.getName(),
+                        slotRef.getDataType().toCatalogDataType(), true);
+                newOutput.add(slotRef.withColumn(virtualColumn));
+            }
         }
 
         LOG.info("JDBC_AGG_PUSHDOWN: pushed down to JDBC scan for table {}, handle={}",
@@ -179,7 +206,7 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
      * Returns the updated handle, or null on failure.
      */
     private ConnectorTableHandle resolveAndApplyPushdown(LogicalFileScan fileScan,
-            List<ConnectorAggregate> aggregates) {
+            List<ConnectorAggregate> aggregates, List<String> groupByColumns) {
         PluginDrivenExternalTable table = (PluginDrivenExternalTable) fileScan.getTable();
         PluginDrivenExternalCatalog catalog = (PluginDrivenExternalCatalog) table.getCatalog();
         Connector connector = catalog.getConnector();
@@ -196,7 +223,7 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
         LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - fresh handle={}", handle);
 
         Optional<AggregateApplicationResult<ConnectorTableHandle>> result =
-                metadata.applyAggregate(session, handle, aggregates);
+                metadata.applyAggregate(session, handle, aggregates, groupByColumns);
         if (!result.isPresent()) {
             LOG.info("JDBC_AGG_PUSHDOWN: resolveAndApplyPushdown - applyAggregate rejected by connector");
             return null;
@@ -256,15 +283,25 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
     /**
      * Parses aggregate output expressions into ConnectorAggregate objects.
      * Returns null if any aggregate function or argument is unsupported.
-     * Populates aggOutputSlots with the aggregate result slots.
+     *
+     * <p>Populates {@code outputSlots} with all output slots in order (group-by columns
+     * first, then aggregate functions — matching LogicalAggregate's output layout), and
+     * {@code groupBySlots} with only the group-by column slots (so the caller knows which
+     * output slots are base-table columns vs. virtual aggregate columns).
      */
     private List<ConnectorAggregate> buildConnectorAggregates(LogicalAggregate<? extends Plan> aggregate,
-            LogicalProject<? extends Plan> project, List<Slot> aggOutputSlots) {
-        // Derive (aggFunction, outputSlot) pairs from the output expressions.
-        // Each output expression must wrap exactly one aggregate function (no GROUP BY).
-        List<AggregateFunction> aggregateFunctions = new ArrayList<>();
+            LogicalProject<? extends Plan> project, List<Slot> outputSlots, List<Slot> groupBySlots) {
+        List<ConnectorAggregate> aggregates = new ArrayList<>();
         for (NamedExpression outputExpr : aggregate.getOutputExpressions()) {
             Set<AggregateFunction> funcs = outputExpr.collect(AggregateFunction.class::isInstance);
+            Slot slot = outputExpr.toSlot();
+            if (funcs.isEmpty()) {
+                // Group-by column: a bare SlotReference in the output (no aggregate function).
+                // It is pushed down as a plain SELECT/GROUP BY column, not a ConnectorAggregate.
+                groupBySlots.add(slot);
+                outputSlots.add(slot);
+                continue;
+            }
             if (funcs.size() != 1) {
                 LOG.info("JDBC_AGG_PUSHDOWN: output expression '{}' has {} aggregate functions (need exactly 1)",
                         outputExpr, funcs.size());
@@ -275,13 +312,7 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
                 LOG.info("JDBC_AGG_PUSHDOWN: aggregate function '{}' is not supported for pushdown", aggFunc);
                 return null;
             }
-            aggregateFunctions.add(aggFunc);
-            aggOutputSlots.add(outputExpr.toSlot());
-        }
 
-        List<ConnectorAggregate> aggregates = new ArrayList<>();
-        for (int index = 0; index < aggregateFunctions.size(); index++) {
-            AggregateFunction aggFunc = aggregateFunctions.get(index);
             // Pass the nereids function name (lowercase, e.g. "sum"); the connector decides
             // whether it is supported via JdbcConnectorClient.supportsAggregatePushdown.
             String functionName = aggFunc.getName().toLowerCase();
@@ -294,24 +325,25 @@ public class PushDownAggregateToJdbcScan implements RewriteRuleFactory {
                 distinct = false;  // count(*) has no distinct
             } else {
                 Expression arg = aggFunc.child(0);
-                SlotReference slot = (SlotReference) arg;
-                String realColumnName = resolveColumnName(slot, project);
+                SlotReference argSlot = (SlotReference) arg;
+                String realColumnName = resolveColumnName(argSlot, project);
                 if (realColumnName == null) {
                     LOG.info("JDBC_AGG_PUSHDOWN: cannot resolve column name for slot '{}' (complex expression)",
-                            slot.getName());
+                            argSlot.getName());
                     return null;
                 }
                 columnName = realColumnName;
-                columnType = toConnectorType(slot.getDataType());
+                columnType = toConnectorType(argSlot.getDataType());
             }
 
-            String alias = aggOutputSlots.get(index).getName();
-            aggregates.add(new ConnectorAggregate(functionName, columnName, alias, distinct, columnType));
+            aggregates.add(new ConnectorAggregate(functionName, columnName, slot.getName(), distinct, columnType));
+            outputSlots.add(slot);
             LOG.info("JDBC_AGG_PUSHDOWN: built ConnectorAggregate: {}({}{}) AS {} type={}",
-                    functionName, distinct ? "DISTINCT " : "", columnName, alias, columnType);
+                    functionName, distinct ? "DISTINCT " : "", columnName, slot.getName(), columnType);
         }
 
-        LOG.info("JDBC_AGG_PUSHDOWN: built {} aggregate(s), rewriting plan", aggregates.size());
+        LOG.info("JDBC_AGG_PUSHDOWN: built {} aggregate(s), {} group-by col(s), rewriting plan",
+                aggregates.size(), groupBySlots.size());
         return aggregates;
     }
 

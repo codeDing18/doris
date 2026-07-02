@@ -102,9 +102,11 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
             LOG.info("JDBC_AGG_PUSHDOWN: planScan for {}.{}, hasPushDownAggregates={}, handle={}",
                     remoteDbName, remoteTableName, hasAgg, jdbcHandle);
             if (hasAgg) {
+                LOG.info("JDBC_AGG_PUSHDOWN: planScan groupByColumns={}", jdbcHandle.getGroupByColumns());
                 querySql = queryBuilder.buildAggregateQuery(
                         remoteDbName, remoteTableName,
-                        jdbcHandle.getPushDownAggregates(), filter, limit);
+                        jdbcHandle.getPushDownAggregates(),
+                        jdbcHandle.getGroupByColumns(), filter, limit);
             } else {
                 querySql = queryBuilder.buildQuery(
                         remoteDbName, remoteTableName, columns, filter, limit);
@@ -191,9 +193,11 @@ public class JdbcScanPlanProvider implements ConnectorScanPlanProvider {
             LOG.info("JDBC_AGG_PUSHDOWN: getScanNodeProperties for {}.{}, hasPushDownAggregates={}, handle={}",
                     jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(), hasAgg, jdbcHandle);
             if (hasAgg) {
+                LOG.info("JDBC_AGG_PUSHDOWN: getScanNodeProperties groupByColumns={}", jdbcHandle.getGroupByColumns());
                 querySql = queryBuilder.buildAggregateQuery(
                         jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),
-                        jdbcHandle.getPushDownAggregates(), filter, -1);
+                        jdbcHandle.getPushDownAggregates(),
+                        jdbcHandle.getGroupByColumns(), filter, -1);
             } else {
                 querySql = queryBuilder.buildQuery(
                         jdbcHandle.getRemoteDbName(), jdbcHandle.getRemoteTableName(),

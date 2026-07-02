@@ -193,5 +193,41 @@ suite("test_mysql_jdbc_agg_pushdown", "p0,external") {
     order_qt_consistency_sum     """ select sum(c_decimal) from ${tbl} """
     order_qt_consistency_mix     """ select sum(c_decimal), avg(c_int), max(c_double) from ${tbl} """
 
+    // ========================================================================
+    // Part 10: GROUP BY pushdown (single and multi-column).
+    //   SELECT gb_col(s), FN(col) ... GROUP BY gb_col(s) -> pushed down to MySQL.
+    //   ROLLUP/CUBE/GROUPING SETS produce a LogicalRepeat node and are not matched
+    //   by this rule, so they fall back to local aggregation.
+    // ========================================================================
+
+    // single-column group-by, column in select list.
+    order_qt_gb_int_sum   """ select c_int, sum(c_decimal) from ${tbl} group by c_int """
+    order_qt_gb_int_count """ select c_int, count(*) from ${tbl} group by c_int """
+    order_qt_gb_int_multi """ select c_int, sum(c_decimal), avg(c_double), min(c_bigint), max(c_bigint) from ${tbl} group by c_int """
+
+    // group-by column NOT in select list (still pushed; the column is added by ColumnPruning).
+    order_qt_gb_hidden    """ select sum(c_decimal) from ${tbl} group by c_int """
+
+    // group-by on varchar column.
+    order_qt_gb_varchar   """ select c_varchar, count(*) from ${tbl} group by c_varchar """
+
+    // multi-column group-by.
+    order_qt_gb_multi_col """ select c_int, c_bigint, sum(c_decimal) from ${tbl} group by c_int, c_bigint """
+
+    // explain verifies GROUP BY clause in the pushed query.
+    explain {
+        sql("select c_int, sum(c_decimal) from ${tbl} group by c_int")
+        contains("GROUP BY")
+        contains("SUM(")
+    }
+    explain {
+        sql("select sum(c_decimal) from ${tbl} group by c_int")
+        contains("GROUP BY")
+    }
+    explain {
+        sql("select c_int, c_bigint, sum(c_decimal) from ${tbl} group by c_int, c_bigint")
+        contains("GROUP BY")
+    }
+
     sql """drop catalog if exists ${catalog_name}"""
 }

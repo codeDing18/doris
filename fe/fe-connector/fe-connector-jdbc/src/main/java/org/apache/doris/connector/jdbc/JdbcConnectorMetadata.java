@@ -244,6 +244,22 @@ public class JdbcConnectorMetadata implements ConnectorMetadata {
     }
 
     @Override
+    public Optional<AggregateApplicationResult<ConnectorTableHandle>> applyAggregate(
+            ConnectorSession session, ConnectorTableHandle handle,
+            List<ConnectorAggregate> aggregates, List<String> groupByColumns) {
+        Optional<AggregateApplicationResult<ConnectorTableHandle>> result =
+                applyAggregate(session, handle, aggregates);
+        if (!result.isPresent()) {
+            return result;
+        }
+        // Attach the group-by columns to the handle produced by the base method.
+        JdbcTableHandle jdbcHandle = (JdbcTableHandle) result.get().getHandle();
+        JdbcTableHandle newHandle = jdbcHandle.withPushDownAggregates(aggregates, groupByColumns);
+        LOG.info("JDBC_AGG_PUSHDOWN: applyAggregate(grouped) produced new handle={}", newHandle);
+        return Optional.of(new AggregateApplicationResult<>(newHandle));
+    }
+
+    @Override
     public boolean supportsCastPredicatePushdown(ConnectorSession session) {
         return Boolean.parseBoolean(
                 session.getSessionProperties()
