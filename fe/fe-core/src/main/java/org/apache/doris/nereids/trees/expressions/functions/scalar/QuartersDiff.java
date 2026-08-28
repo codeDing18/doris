@@ -43,10 +43,11 @@ public class QuartersDiff extends ScalarFunction implements BinaryExpression, Ex
 
     private static final List<FunctionSignature> SIGNATURES = ImmutableList.of(
             FunctionSignature.ret(BigIntType.INSTANCE)
-                    .args(TimeStampTzType.WILDCARD, TimeStampTzType.WILDCARD),
-            FunctionSignature.ret(BigIntType.INSTANCE)
                     .args(DateTimeV2Type.WILDCARD, DateTimeV2Type.WILDCARD),
-            FunctionSignature.ret(BigIntType.INSTANCE).args(DateV2Type.INSTANCE, DateV2Type.INSTANCE)
+            FunctionSignature.ret(BigIntType.INSTANCE).args(DateV2Type.INSTANCE, DateV2Type.INSTANCE),
+            // listed last on purpose, see DateDiff
+            FunctionSignature.ret(BigIntType.INSTANCE)
+                    .args(TimeStampTzType.WILDCARD, TimeStampTzType.WILDCARD)
     );
 
     /**

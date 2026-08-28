@@ -41,10 +41,13 @@ public class DateDiff extends ScalarFunction
 
     public static final List<FunctionSignature> SIGNATURES = ImmutableList.of(
             FunctionSignature.ret(IntegerType.INSTANCE)
-                    .args(TimeStampTzType.WILDCARD, TimeStampTzType.WILDCARD),
-            FunctionSignature.ret(IntegerType.INSTANCE)
                     .args(DateTimeV2Type.WILDCARD, DateTimeV2Type.WILDCARD),
-            FunctionSignature.ret(IntegerType.INSTANCE).args(DateV2Type.INSTANCE, DateV2Type.INSTANCE));
+            FunctionSignature.ret(IntegerType.INSTANCE).args(DateV2Type.INSTANCE, DateV2Type.INSTANCE),
+            // timestamptz is listed last: for non-literal varchar slots all signatures tie and
+            // SearchSignature picks the first candidate, which must be the wall-clock datetimev2
+            // semantics rather than a tz-shifted timestamptz cast (issue #66120)
+            FunctionSignature.ret(IntegerType.INSTANCE)
+                    .args(TimeStampTzType.WILDCARD, TimeStampTzType.WILDCARD));
 
     /**
      * constructor with 2 arguments.
